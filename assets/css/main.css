@@ -1,0 +1,77 @@
+/* =============================================================================
+   Newsar Dark Mode - CSS Custom Properties
+   ============================================================================= */
+
+:root {
+  /* Light mode (default) */
+  --color-bg: #ffffff;
+  --color-bg-secondary: #f9fafb;
+  --color-bg-tertiary: #f3f4f6;
+  --color-text: #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-tertiary: #9ca3af;
+  --color-border: #e5e7eb;
+  --color-border-light: #f3f4f6;
+  --color-accent: #0284c7;
+  --color-accent-hover: #0369a1;
+  --color-card-bg: #ffffff;
+  --color-card-shadow: rgba(0, 0, 0, 0.1);
+  --color-header-bg: rgba(255, 255, 255, 0.75);
+  --color-badge-bg: #e5e7eb;
+  --color-input-bg: #ffffff;
+  --color-input-border: #d1d5db;
+  --color-success: #059669;
+  --color-warning: #d97706;
+  --color-error: #dc2626;
+  --color-code-bg: #f3f4f6;
+  --color-hover-bg: #f9fafb;
+  --color-gradient-from: #f9fafb;
+  --color-gradient-to: #ffffff;
+}
+
+html.dark {
+  --color-bg: #0f172a;
+  --color-bg-secondary: #1e293b;
+  --color-bg-tertiary: #334155;
+  --color-text: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-tertiary: #64748b;
+  --color-border: #334155;
+  --color-border-light: #1e293b;
+  --color-accent: #38bdf8;
+  --color-accent-hover: #7dd3fc;
+  --color-card-bg: #1e293b;
+  --color-card-shadow: rgba(0, 0, 0, 0.3);
+  --color-header-bg: rgba(15, 23, 42, 0.85);
+  --color-badge-bg: #334155;
+  --color-input-bg: #1e293b;
+  --color-input-border: #475569;
+  --color-success: #34d399;
+  --color-warning: #fbbf24;
+  --color-error: #f87171;
+  --color-code-bg: #1e293b;
+  --color-hover-bg: #1e293b;
+  --color-gradient-from: #0f172a;
+  --color-gradient-to: #1e293b;
+
+  color-scheme: dark;
+}
+
+/* Base body styles using CSS vars */
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Smooth transitions for dark mode */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color, box-shadow;
+  transition-duration: 0s;
+  transition-timing-function: ease;
+}
+
+/* Only apply transitions when the user has toggled, not on page load */
+html.dark-transition *, html.dark-transition *::before, html.dark-transition *::after {
+  transition-duration: 0.2s;
+}

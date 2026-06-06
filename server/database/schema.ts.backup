@@ -1,0 +1,149 @@
+import { pgTable, serial, text, timestamp, varchar, integer, real, jsonb, index, unique, customType } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+
+// Custom vector type for pgvector
+const vector = customType<{ data: number[]; driverData: string }>({
+  dataType(config) {
+    return `vector(${config?.dimensions ?? 768})`
+  },
+  fromDriver(value: string): number[] {
+    return JSON.parse(value)
+  },
+  toDriver(value: number[]): string {
+    return JSON.stringify(value)
+  },
+})
+
+// Feeds table - RSS feed sources
+export const feeds = pgTable('feeds', {
+  id: serial('id').primaryKey(),
+  url: varchar('url', { length: 2048 }).notNull().unique(),
+  name: varchar('name', { length: 255 }).notNull(),
+  category: varchar('category', { length: 100 }),
+  knownBias: real('known_bias'), // -1 to 1 scale
+  region: varchar('region', { length: 100 }),
+  isActive: integer('is_active').default(1).notNull(), // 1 = active, 0 = inactive
+  lastFetchedAt: timestamp('last_fetched_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  urlIdx: index('feeds_url_idx').on(table.url),
+  categoryIdx: index('feeds_category_idx').on(table.category),
+  regionIdx: index('feeds_region_idx').on(table.region),
+}))
+
+// Articles table - News articles
+export const articles = pgTable('articles', {
+  id: serial('id').primaryKey(),
+  feedId: integer('feed_id').references(() => feeds.id).notNull(),
+  title: text('title').notNull(),
+  content: text('content'),
+  url: varchar('url', { length: 2048 }).notNull().unique(),
+  author: varchar('author', { length: 255 }),
+  publishedAt: timestamp('published_at'),
+  contentHash: varchar('content_hash', { length: 64 }).notNull(), // SHA-256 hash
+  rawData: jsonb('raw_data'), // Store original RSS data
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  urlIdx: index('articles_url_idx').on(table.url),
+  feedIdIdx: index('articles_feed_id_idx').on(table.feedId),
+  publishedAtIdx: index('articles_published_at_idx').on(table.publishedAt),
+  contentHashIdx: index('articles_content_hash_idx').on(table.contentHash),
+}))
+
+// Classifications table - Article classifications
+export const classifications = pgTable('classifications', {
+  id: serial('id').primaryKey(),
+  articleId: integer('article_id').references(() => articles.id).notNull(),
+  language: varchar('language', { length: 10 }),
+  politicalBias: real('political_bias'), // -1 (left) to 1 (right)
+  geoPov: varchar('geo_pov', { length: 100 }), // Geographic point of view
+  confidence: real('confidence'), // 0 to 1
+  method: varchar('method', { length: 50 }), // 'rule-based', 'ollama', 'hybrid'
+  metadata: jsonb('metadata'), // Additional classification data
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  articleIdIdx: index('classifications_article_id_idx').on(table.articleId),
+  languageIdx: index('classifications_language_idx').on(table.language),
+  biasIdx: index('classifications_bias_idx').on(table.politicalBias),
+}))
+
+// Article embeddings table - Vector embeddings for semantic search
+export const articleEmbeddings = pgTable('article_embeddings', {
+  id: serial('id').primaryKey(),
+  articleId: integer('article_id').references(() => articles.id).notNull().unique(),
+  embedding: vector('embedding', { dimensions: 768 }).notNull(), // pgvector column for nomic-embed-text (768 dimensions)
+  model: varchar('model', { length: 100 }).default('nomic-embed-text'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  articleIdIdx: index('article_embeddings_article_id_idx').on(table.articleId),
+}))
+
+// Article groups table - Clustered similar stories
+export const articleGroups = pgTable('article_groups', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 255 }),
+  description: text('description'),
+  clusterMethod: varchar('cluster_method', { length: 50 }), // 'dbscan', 'hdbscan', 'manual'
+  centroidEmbedding: vector('centroid_embedding', { dimensions: 768 }), // Cluster centroid
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+})
+
+// Article group members - Many-to-many relationship
+export const articleGroupMembers = pgTable('article_group_members', {
+  id: serial('id').primaryKey(),
+  groupId: integer('group_id').references(() => articleGroups.id).notNull(),
+  articleId: integer('article_id').references(() => articles.id).notNull(),
+  similarity: real('similarity'), // Similarity score to centroid
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  groupArticleUnique: unique('group_article_unique').on(table.groupId, table.articleId),
+  groupIdIdx: index('article_group_members_group_id_idx').on(table.groupId),
+  articleIdIdx: index('article_group_members_article_id_idx').on(table.articleId),
+}))
+
+// Article modifications table - Track changes to articles over time
+export const articleModifications = pgTable('article_modifications', {
+  id: serial('id').primaryKey(),
+  articleId: integer('article_id').references(() => articles.id).notNull(),
+  fieldName: varchar('field_name', { length: 100 }).notNull(), // 'title', 'content', etc.
+  oldValue: text('old_value'),
+  newValue: text('new_value'),
+  diffData: jsonb('diff_data'), // Detailed diff information
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  articleIdIdx: index('article_modifications_article_id_idx').on(table.articleId),
+  createdAtIdx: index('article_modifications_created_at_idx').on(table.createdAt),
+}))
+
+// Keywords table - Extracted keywords from articles
+export const keywords = pgTable('keywords', {
+  id: serial('id').primaryKey(),
+  articleId: integer('article_id').references(() => articles.id).notNull(),
+  keyword: varchar('keyword', { length: 255 }).notNull(),
+  relevanceScore: real('relevance_score').notNull(), // 0 to 1
+  extractionMethod: varchar('extraction_method', { length: 50 }), // 'ollama', 'tfidf', etc.
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  articleIdIdx: index('keywords_article_id_idx').on(table.articleId),
+  keywordIdx: index('keywords_keyword_idx').on(table.keyword),
+  scoreIdx: index('keywords_score_idx').on(table.relevanceScore),
+}))
+
+// Sources config table - Domain rules for hybrid classification
+export const sourcesConfig = pgTable('sources_config', {
+  id: serial('id').primaryKey(),
+  domain: varchar('domain', { length: 255 }).notNull().unique(),
+  name: varchar('name', { length: 255 }),
+  politicalBias: real('political_bias'), // Known bias -1 to 1
+  region: varchar('region', { length: 100 }),
+  reliability: real('reliability'), // 0 to 1
+  metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  domainIdx: index('sources_config_domain_idx').on(table.domain),
+}))

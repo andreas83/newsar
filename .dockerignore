@@ -1,0 +1,59 @@
+# Node modules and dependencies
+node_modules/
+.npm/
+npm-debug.log*
+
+# Build outputs
+.nuxt/
+.output/
+dist/
+.cache/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+/var/log/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Database
+*.db
+*.sqlite
+
+# Temp files
+tmp/
+temp/
+*.tmp
+
+# Documentation (not needed in image)
+*.md
+CLAUDE.md
+COMPLETION_REPORT.md
+IMPLEMENTATION_PLAN.md
+NETWORK_GRAPH_OSINT.md
+
+# Images
+public/images/
+
+# Scripts (not needed in Ollama image)
+server/scripts/
+
+# PM2
+ecosystem.config.cjs

@@ -1,0 +1,38 @@
+# Nuxt dev/build outputs
+.output
+.data
+data/
+.nuxt
+.nitro
+.cache
+dist
+
+# Node dependencies
+node_modules
+
+# Logs
+logs
+*.log
+
+# Misc
+.DS_Store
+.fleet
+.idea
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# Claude Code local settings (may contain secrets)
+.claude/settings.local.json
+
+# Downloaded article images (re-fetchable via pipeline)
+public/images/articles/
+
+# ML artifacts (models, data, venv)
+ml/.venv/
+ml/data/
+ml/models/*.joblib
+ml/reports/
+ml/__pycache__/
