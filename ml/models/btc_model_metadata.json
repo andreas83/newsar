@@ -1,0 +1,912 @@
+{
+  "training_date": "2026-08-23T10:10:11.617213",
+  "total_samples": 428,
+  "total_features": 37,
+  "feature_columns": [
+    "month",
+    "atr_14",
+    "rsi_14",
+    "return_1d",
+    "return_3d",
+    "return_7d",
+    "is_weekend",
+    "return_14d",
+    "day_of_week",
+    "is_cpi_week",
+    "is_fomc_day",
+    "is_fomc_week",
+    "sma_ratio_20",
+    "sma_ratio_50",
+    "volume_ratio",
+    "fed_sentiment",
+    "is_us_holiday",
+    "spy_5d_return",
+    "is_quarter_end",
+    "spy_20d_return",
+    "volatility_20d",
+    "bollinger_pct_b",
+    "trump_sentiment",
+    "volume_trend_5d",
+    "crypto_sentiment",
+    "fed_mention_count",
+    "is_election_month",
+    "overall_news_fear",
+    "days_since_halving",
+    "is_earnings_season",
+    "spy_volatility_20d",
+    "trump_mention_count",
+    "crypto_mention_count",
+    "days_to_tax_deadline",
+    "is_options_expiry_week",
+    "btc_spy_correlation_30d",
+    "geopolitical_tension_score"
+  ],
+  "n_folds": 26,
+  "models": {
+    "btc_xgb_2w_classifier": {
+      "fold_metrics": [
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 0,
+          "train_size": 60,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.5,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.9183673469387754,
+          "log_loss": 0.8063719964205162,
+          "fold": 1,
+          "train_size": 74,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.5,
+          "log_loss": 0.6585139144228627,
+          "fold": 2,
+          "train_size": 88,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.2857142857142857,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.5,
+          "log_loss": 0.7944301845020102,
+          "fold": 3,
+          "train_size": 102,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 4,
+          "train_size": 116,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.8571428571428571,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.8125,
+          "log_loss": 0.42046955591736296,
+          "fold": 5,
+          "train_size": 130,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 6,
+          "train_size": 144,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.5,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.46938775510204084,
+          "log_loss": 0.8318421173972096,
+          "fold": 7,
+          "train_size": 158,
+          "test_size": 14
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 8,
+          "train_size": 172,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.5714285714285714,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 1.0,
+          "log_loss": 0.5161513569240899,
+          "fold": 9,
+          "train_size": 186,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 1.0,
+          "recall": 0.5833333333333334,
+          "f1": 0.7368421052631579,
+          "roc_auc": 1.0,
+          "log_loss": 0.6452368867009283,
+          "fold": 10,
+          "train_size": 200,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.7142857142857143,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 11,
+          "train_size": 214,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 12,
+          "train_size": 228,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.9285714285714286,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.15384615384615385,
+          "log_loss": 0.36892001260927554,
+          "fold": 13,
+          "train_size": 242,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.21428571428571427,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.18181818181818182,
+          "log_loss": 1.1950327157817167,
+          "fold": 14,
+          "train_size": 256,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.7142857142857143,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.675,
+          "log_loss": 0.5920867352310076,
+          "fold": 15,
+          "train_size": 270,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.5714285714285714,
+          "precision": 1.0,
+          "recall": 0.14285714285714285,
+          "f1": 0.25,
+          "roc_auc": 0.6326530612244898,
+          "log_loss": 0.7179113098571518,
+          "fold": 16,
+          "train_size": 284,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.14285714285714285,
+          "precision": 1.0,
+          "recall": 0.14285714285714285,
+          "f1": 0.25,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 17,
+          "train_size": 298,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.14285714285714285,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.0,
+          "log_loss": 0.9756078998526151,
+          "fold": 18,
+          "train_size": 312,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.14285714285714285,
+          "precision": 0.14285714285714285,
+          "recall": 1.0,
+          "f1": 0.25,
+          "roc_auc": 1.0,
+          "log_loss": 0.9175888716539023,
+          "fold": 19,
+          "train_size": 326,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.5714285714285714,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 20,
+          "train_size": 340,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.8484848484848484,
+          "log_loss": 0.5118891535395517,
+          "fold": 21,
+          "train_size": 354,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.7142857142857143,
+          "precision": 0.3333333333333333,
+          "recall": 1.0,
+          "f1": 0.5,
+          "roc_auc": 0.75,
+          "log_loss": 0.6545923928463313,
+          "fold": 22,
+          "train_size": 368,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.2857142857142857,
+          "precision": 1.0,
+          "recall": 0.16666666666666666,
+          "f1": 0.2857142857142857,
+          "roc_auc": 0.9166666666666666,
+          "log_loss": 0.8863815439239385,
+          "fold": 23,
+          "train_size": 382,
+          "test_size": 14
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.7083333333333334,
+          "log_loss": 0.5076058439803975,
+          "fold": 24,
+          "train_size": 396,
+          "test_size": 14
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 25,
+          "train_size": 410,
+          "test_size": 14
+        }
+      ],
+      "avg_metrics": {
+        "accuracy": 0.6126373626373627,
+        "precision": 0.17216117216117216,
+        "recall": 0.11675824175824176,
+        "f1": 0.08740601503759399,
+        "roc_auc": 0.6510033733773231
+      },
+      "feature_importance": {
+        "month": 0.0,
+        "atr_14": 0.05896506831049919,
+        "rsi_14": 0.04278510436415672,
+        "return_1d": 0.03916183114051819,
+        "return_3d": 0.020806504413485527,
+        "return_7d": 0.02849317528307438,
+        "is_weekend": 0.0,
+        "return_14d": 0.03585337474942207,
+        "day_of_week": 0.0,
+        "is_cpi_week": 0.0,
+        "is_fomc_day": 0.0,
+        "is_fomc_week": 0.04409964382648468,
+        "sma_ratio_20": 0.05301342159509659,
+        "sma_ratio_50": 0.052462585270404816,
+        "volume_ratio": 0.024678273126482964,
+        "fed_sentiment": 0.0,
+        "is_us_holiday": 0.0,
+        "spy_5d_return": 0.021297188475728035,
+        "is_quarter_end": 0.0,
+        "spy_20d_return": 0.03154248371720314,
+        "volatility_20d": 0.03564868122339249,
+        "bollinger_pct_b": 0.06175023317337036,
+        "trump_sentiment": 0.0,
+        "volume_trend_5d": 0.030672017484903336,
+        "crypto_sentiment": 0.0,
+        "fed_mention_count": 0.0,
+        "is_election_month": 0.0,
+        "overall_news_fear": 0.050628211349248886,
+        "days_since_halving": 0.04917997866868973,
+        "is_earnings_season": 0.05232158675789833,
+        "spy_volatility_20d": 0.05314357951283455,
+        "trump_mention_count": 0.05331314727663994,
+        "crypto_mention_count": 0.0,
+        "days_to_tax_deadline": 0.04066164046525955,
+        "is_options_expiry_week": 0.057605475187301636,
+        "btc_spy_correlation_30d": 0.02744126133620739,
+        "geopolitical_tension_score": 0.034475550055503845
+      }
+    },
+    "btc_lgbm_2w_classifier": {
+      "fold_metrics": [
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 0
+        },
+        {
+          "accuracy": 0.5,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 1.0,
+          "log_loss": 0.7732098675068657,
+          "fold": 1
+        },
+        {
+          "accuracy": 0.9285714285714286,
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.8888888888888888,
+          "roc_auc": 1.0,
+          "log_loss": 0.31096597932318576,
+          "fold": 2
+        },
+        {
+          "accuracy": 0.42857142857142855,
+          "precision": 0.75,
+          "recall": 0.3,
+          "f1": 0.42857142857142855,
+          "roc_auc": 0.5249999999999999,
+          "log_loss": 0.9690175143423468,
+          "fold": 3
+        },
+        {
+          "accuracy": 0.9285714285714286,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 4
+        },
+        {
+          "accuracy": 0.8571428571428571,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.5,
+          "log_loss": 0.45712794777066884,
+          "fold": 5
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 6
+        },
+        {
+          "accuracy": 0.5,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.5714285714285714,
+          "log_loss": 0.9106341645732313,
+          "fold": 7
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 8
+        },
+        {
+          "accuracy": 0.8571428571428571,
+          "precision": 1.0,
+          "recall": 0.6666666666666666,
+          "f1": 0.8,
+          "roc_auc": 0.96875,
+          "log_loss": 0.4222988673513171,
+          "fold": 9
+        },
+        {
+          "accuracy": 0.5714285714285714,
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.6666666666666666,
+          "roc_auc": 0.7291666666666666,
+          "log_loss": 0.7200521514581261,
+          "fold": 10
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 11
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 12
+        },
+        {
+          "accuracy": 0.9285714285714286,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.6153846153846154,
+          "log_loss": 0.41270734642262574,
+          "fold": 13
+        },
+        {
+          "accuracy": 0.21428571428571427,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.31818181818181823,
+          "log_loss": 1.47317090328487,
+          "fold": 14
+        },
+        {
+          "accuracy": 0.7142857142857143,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.675,
+          "log_loss": 0.6100049982314136,
+          "fold": 15
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 1.0,
+          "recall": 0.2857142857142857,
+          "f1": 0.4444444444444444,
+          "roc_auc": 0.7142857142857143,
+          "log_loss": 0.6508259085276601,
+          "fold": 16
+        },
+        {
+          "accuracy": 0.35714285714285715,
+          "precision": 1.0,
+          "recall": 0.35714285714285715,
+          "f1": 0.5263157894736842,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 17
+        },
+        {
+          "accuracy": 0.14285714285714285,
+          "precision": 0.4,
+          "recall": 0.18181818181818182,
+          "f1": 0.25,
+          "roc_auc": 0.060606060606060615,
+          "log_loss": 0.8719498747853882,
+          "fold": 18
+        },
+        {
+          "accuracy": 0.42857142857142855,
+          "precision": 0.2,
+          "recall": 1.0,
+          "f1": 0.3333333333333333,
+          "roc_auc": 1.0,
+          "log_loss": 0.6924604083599449,
+          "fold": 19
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 20
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.9696969696969697,
+          "log_loss": 0.4662886313487585,
+          "fold": 21
+        },
+        {
+          "accuracy": 0.35714285714285715,
+          "precision": 0.1111111111111111,
+          "recall": 0.5,
+          "f1": 0.18181818181818182,
+          "roc_auc": 0.4166666666666667,
+          "log_loss": 0.7117437650419884,
+          "fold": 22
+        },
+        {
+          "accuracy": 0.2857142857142857,
+          "precision": 1.0,
+          "recall": 0.16666666666666666,
+          "f1": 0.2857142857142857,
+          "roc_auc": 0.9583333333333333,
+          "log_loss": 0.9047791883317924,
+          "fold": 23
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.45833333333333337,
+          "log_loss": 0.5457266459237797,
+          "fold": 24
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 25
+        }
+      ],
+      "avg_metrics": {
+        "accuracy": 0.6868131868131867,
+        "precision": 0.28696581196581195,
+        "recall": 0.18300033300033303,
+        "f1": 0.18483665457349666,
+        "roc_auc": 0.6753431617402206
+      },
+      "feature_importance": {
+        "month": 4,
+        "atr_14": 72,
+        "rsi_14": 23,
+        "return_1d": 32,
+        "return_3d": 4,
+        "return_7d": 4,
+        "is_weekend": 0,
+        "return_14d": 15,
+        "day_of_week": 8,
+        "is_cpi_week": 0,
+        "is_fomc_day": 0,
+        "is_fomc_week": 12,
+        "sma_ratio_20": 13,
+        "sma_ratio_50": 42,
+        "volume_ratio": 6,
+        "fed_sentiment": 0,
+        "is_us_holiday": 0,
+        "spy_5d_return": 6,
+        "is_quarter_end": 0,
+        "spy_20d_return": 46,
+        "volatility_20d": 43,
+        "bollinger_pct_b": 7,
+        "trump_sentiment": 4,
+        "volume_trend_5d": 6,
+        "crypto_sentiment": 0,
+        "fed_mention_count": 0,
+        "is_election_month": 0,
+        "overall_news_fear": 3,
+        "days_since_halving": 82,
+        "is_earnings_season": 0,
+        "spy_volatility_20d": 78,
+        "trump_mention_count": 13,
+        "crypto_mention_count": 0,
+        "days_to_tax_deadline": 46,
+        "is_options_expiry_week": 19,
+        "btc_spy_correlation_30d": 7,
+        "geopolitical_tension_score": 14
+      }
+    },
+    "btc_logreg_baseline": {
+      "fold_metrics": [
+        {
+          "accuracy": 0.8571428571428571,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 0
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 1.0,
+          "recall": 0.2857142857142857,
+          "f1": 0.4444444444444444,
+          "roc_auc": 1.0,
+          "log_loss": 0.4012556917466865,
+          "fold": 1
+        },
+        {
+          "accuracy": 0.9285714285714286,
+          "precision": 1.0,
+          "recall": 0.8,
+          "f1": 0.8888888888888888,
+          "roc_auc": 1.0,
+          "log_loss": 0.20490440219799583,
+          "fold": 2
+        },
+        {
+          "accuracy": 0.5,
+          "precision": 0.7142857142857143,
+          "recall": 0.5,
+          "f1": 0.5882352941176471,
+          "roc_auc": 0.475,
+          "log_loss": 1.4982147788894078,
+          "fold": 3
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 4
+        },
+        {
+          "accuracy": 0.8571428571428571,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.5833333333333333,
+          "log_loss": 0.7978232685429142,
+          "fold": 5
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 6
+        },
+        {
+          "accuracy": 0.35714285714285715,
+          "precision": 0.4,
+          "recall": 0.5714285714285714,
+          "f1": 0.47058823529411764,
+          "roc_auc": 0.4897959183673469,
+          "log_loss": 7.17472156084351,
+          "fold": 7
+        },
+        {
+          "accuracy": 0.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 8
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 1.0,
+          "recall": 0.16666666666666666,
+          "f1": 0.2857142857142857,
+          "roc_auc": 1.0,
+          "log_loss": 1.1805053300128159,
+          "fold": 9
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571428571428571,
+          "roc_auc": 0.875,
+          "log_loss": 0.36977202782888513,
+          "fold": 10
+        },
+        {
+          "accuracy": 0.14285714285714285,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 11
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 12
+        },
+        {
+          "accuracy": 0.9285714285714286,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.5384615384615384,
+          "log_loss": 0.34508139604250393,
+          "fold": 13
+        },
+        {
+          "accuracy": 0.42857142857142855,
+          "precision": 0.8,
+          "recall": 0.36363636363636365,
+          "f1": 0.5,
+          "roc_auc": 0.6363636363636365,
+          "log_loss": 1.203272829929476,
+          "fold": 14
+        },
+        {
+          "accuracy": 0.7142857142857143,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.75,
+          "log_loss": 1.0950532208443886,
+          "fold": 15
+        },
+        {
+          "accuracy": 0.5,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.7755102040816326,
+          "log_loss": 2.9780478621014126,
+          "fold": 16
+        },
+        {
+          "accuracy": 0.07142857142857142,
+          "precision": 1.0,
+          "recall": 0.07142857142857142,
+          "f1": 0.13333333333333333,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 17
+        },
+        {
+          "accuracy": 0.21428571428571427,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": 0.18181818181818182,
+          "log_loss": 2.0281101255312035,
+          "fold": 18
+        },
+        {
+          "accuracy": 0.2857142857142857,
+          "precision": 0.16666666666666666,
+          "recall": 1.0,
+          "f1": 0.2857142857142857,
+          "roc_auc": 0.9583333333333333,
+          "log_loss": 1.17071136834808,
+          "fold": 19
+        },
+        {
+          "accuracy": 0.14285714285714285,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 20
+        },
+        {
+          "accuracy": 0.35714285714285715,
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4,
+          "roc_auc": 0.9393939393939393,
+          "log_loss": 1.0237267760304587,
+          "fold": 21
+        },
+        {
+          "accuracy": 0.5714285714285714,
+          "precision": 0.25,
+          "recall": 1.0,
+          "f1": 0.4,
+          "roc_auc": 0.5833333333333333,
+          "log_loss": 0.9178318142608717,
+          "fold": 22
+        },
+        {
+          "accuracy": 0.6428571428571429,
+          "precision": 0.8181818181818182,
+          "recall": 0.75,
+          "f1": 0.782608695652174,
+          "roc_auc": 0.7083333333333333,
+          "log_loss": 0.5599057029257313,
+          "fold": 23
+        },
+        {
+          "accuracy": 0.7857142857142857,
+          "precision": 0.3333333333333333,
+          "recall": 0.5,
+          "f1": 0.4,
+          "roc_auc": 0.5833333333333334,
+          "log_loss": 0.5182534737275419,
+          "fold": 24
+        },
+        {
+          "accuracy": 1.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "roc_auc": null,
+          "log_loss": null,
+          "fold": 25
+        }
+      ],
+      "avg_metrics": {
+        "accuracy": 0.5769230769230769,
+        "precision": 0.3358641358641359,
+        "recall": 0.29841824841824843,
+        "f1": 0.24756424308853978,
+        "roc_auc": 0.7104711814795849
+      }
+    }
+  }
+}

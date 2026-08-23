@@ -1,0 +1,51 @@
+{
+  "feature_columns": [
+    "month",
+    "atr_14",
+    "rsi_14",
+    "return_1d",
+    "return_3d",
+    "return_7d",
+    "is_weekend",
+    "return_14d",
+    "day_of_week",
+    "is_cpi_week",
+    "is_fomc_day",
+    "is_fomc_week",
+    "sma_ratio_20",
+    "sma_ratio_50",
+    "volume_ratio",
+    "fed_sentiment",
+    "is_us_holiday",
+    "spy_5d_return",
+    "is_quarter_end",
+    "spy_20d_return",
+    "volatility_20d",
+    "bollinger_pct_b",
+    "trump_sentiment",
+    "volume_trend_5d",
+    "crypto_sentiment",
+    "fed_mention_count",
+    "is_election_month",
+    "overall_news_fear",
+    "days_since_halving",
+    "is_earnings_season",
+    "spy_volatility_20d",
+    "trump_mention_count",
+    "crypto_mention_count",
+    "days_to_tax_deadline",
+    "is_options_expiry_week",
+    "btc_spy_correlation_30d",
+    "geopolitical_tension_score"
+  ],
+  "target_columns": [
+    "target_7d_up",
+    "target_14d_up",
+    "target_7d_change",
+    "target_14d_change"
+  ],
+  "id_columns": [
+    "feature_date"
+  ],
+  "total_features": 37
+}
