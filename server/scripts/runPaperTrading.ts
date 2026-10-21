@@ -47,7 +47,11 @@ async function main() {
       if (strategy !== 'buy_and_hold') {
         console.log('  Processing new signals...')
         const signalResult = await processNewSignals(portfolioId, strategy)
-        console.log(`  → Opened: ${signalResult.opened}, Skipped: ${signalResult.skipped}`)
+        if (signalResult.blocked) {
+          console.log(`  → No new positions (${signalResult.blocked})`)
+        } else {
+          console.log(`  → Opened: ${signalResult.opened}, Skipped: ${signalResult.skipped}`)
+        }
       }
 
       // 2. Update open positions (check stops, TP, expiry)

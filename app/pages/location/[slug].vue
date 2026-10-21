@@ -226,6 +226,7 @@
 
 <script setup lang="ts">
 const { getSubtypeLabel, getSubtypeClasses } = useEntitySubtypes()
+const cartoTileUrl = useCartoTileUrl('rastertiles/voyager')
 const route = useRoute()
 const slug = route.params.slug as string
 
@@ -330,7 +331,7 @@ onMounted(async () => {
         mapInstance = L.map(mapContainer.value, { scrollWheelZoom: false }).setView([lat, lon], zoom)
 
         // CartoDB Voyager - modern clean theme
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        L.tileLayer(cartoTileUrl, {
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
           subdomains: 'abcd',
           maxZoom: 19,

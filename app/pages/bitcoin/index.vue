@@ -20,7 +20,7 @@ watch(priceRange, () => refreshPrices())
 
 useSeoMeta({
   title: 'Bitcoin - Newsar',
-  description: 'Bitcoin price, news, and ML predictions.',
+  description: 'Bitcoin price and news.',
 })
 
 function formatMoney(val: any): string {
@@ -78,7 +78,7 @@ function sentimentColor(val: number | null): string {
   <Container class="py-8">
     <div class="mb-6">
       <h1 class="text-3xl font-bold font-serif text-ink mb-2">Bitcoin</h1>
-      <p class="text-ink-3">Price tracking, ML predictions, and trading simulation.</p>
+      <p class="text-ink-3">Bitcoin price and news. The prediction and trading experiments are retired; their pages are kept as the record.</p>
     </div>
 
     <BitcoinSubNav />
@@ -140,27 +140,13 @@ function sentimentColor(val: number | null): string {
 
       <!-- Sidebar -->
       <div class="space-y-4">
-        <!-- Active Prediction -->
+        <!-- Model status: the BTC model was retired, so no live call is shown -->
         <div class="border border-rule rounded-lg p-4 bg-surface">
-          <div class="text-xs text-ink-4 font-mono mb-2">ML Prediction</div>
-          <template v-if="predictions?.predictions?.length">
-            <div class="text-lg font-mono font-bold mb-1"
-              :class="{
-                'text-emerald-500': predictions.predictions[0].direction === 'bullish',
-                'text-rose-500': predictions.predictions[0].direction === 'bearish',
-                'text-ink-3': predictions.predictions[0].direction === 'neutral',
-              }">
-              {{ predictions.predictions[0].direction.toUpperCase() }}
-            </div>
-            <div class="text-xs text-ink-3 font-mono">
-              P(Up 2w): {{ predictions.predictions[0].probUp2w != null ? (predictions.predictions[0].probUp2w * 100).toFixed(1) + '%' : '--' }}
-            </div>
-            <div class="text-xs text-ink-4 font-mono">
-              Confidence: {{ predictions.predictions[0].confidence != null ? (predictions.predictions[0].confidence * 100).toFixed(0) + '%' : '--' }}
-            </div>
-            <NuxtLink to="/bitcoin/predictions" class="text-xs text-accent hover:underline mt-2 block">View details</NuxtLink>
-          </template>
-          <div v-else class="text-sm text-ink-4">No active prediction</div>
+          <div class="text-xs text-ink-4 font-mono mb-2">Price prediction</div>
+          <p class="text-sm text-ink-3">
+            None. Our Bitcoin model was retired on 23 Aug 2026 after it did no better than chance.
+          </p>
+          <NuxtLink to="/bitcoin/predictions" class="text-xs text-accent hover:underline mt-2 block">See its record</NuxtLink>
         </div>
 
         <!-- Upcoming Events -->

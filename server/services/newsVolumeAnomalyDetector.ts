@@ -79,7 +79,7 @@ async function getDailyMentions(targetDate: string): Promise<DailyMentions[]> {
     WHERE DATE(a.published_at) = ${targetDate}::date
       AND a.excluded = false
     GROUP BY ae.entity_id, sw.id, sw.ticker, DATE(a.published_at)
-    HAVING COUNT(DISTINCT ae.article_id) >= 2
+    HAVING COUNT(DISTINCT ae.article_id) >= 1
   `)
 
   return result.rows.map((r: any) => ({
@@ -248,8 +248,8 @@ export async function detectAnomaliesForDate(targetDate: string): Promise<Detect
     const baseline = baselines.get(mention.entityId)
     if (!baseline) continue
 
-    // Skip entities with very sparse baseline (< 0.3 avg mentions/day ≈ < 9/month)
-    if (baseline.avgDailyMentions < 0.3) continue
+    // Skip entities with very sparse baseline (< 0.1 avg mentions/day ≈ < 3/month)
+    if (baseline.avgDailyMentions < 0.1) continue
 
     const multiplier = baseline.avgDailyMentions > 0
       ? mention.mentionCount / baseline.avgDailyMentions
@@ -264,6 +264,8 @@ export async function detectAnomaliesForDate(targetDate: string): Promise<Detect
       eventTypes.push('volume_spike_3x')
     } else if (multiplier >= 2) {
       eventTypes.push('volume_spike_2x')
+    } else if (multiplier >= 1.5) {
+      eventTypes.push('volume_spike_1_5x')
     }
 
     if (sourceMultiplier >= 2 && mention.sourceCount >= 3) {

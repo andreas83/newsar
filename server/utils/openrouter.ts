@@ -3,6 +3,8 @@
  * Uses free models like meta-llama/llama-3.1-405b-instruct:free
  */
 
+import { groundSystemPrompt } from './llmGrounding'
+
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 // Rate limiting: 10 requests per minute for free tier (conservative)
@@ -101,12 +103,10 @@ export async function generateOpenRouterCompletion(
 
   const messages: OpenRouterMessage[] = []
 
-  if (systemPrompt) {
-    messages.push({
-      role: 'system',
-      content: systemPrompt,
-    })
-  }
+  messages.push({
+    role: 'system',
+    content: groundSystemPrompt(systemPrompt),
+  })
 
   messages.push({
     role: 'user',

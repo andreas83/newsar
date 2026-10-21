@@ -98,6 +98,11 @@ function formatDateOnly(val: any): string {
     </div>
     <BitcoinSubNav />
 
+    <ArchivedBanner title="Live trading stopped" retired-on="23 August 2026"
+      reference="See BTC_MODEL_ASSESSMENT.md for the full analysis.">
+      The live portfolio is deactivated and holds no positions. It executed one trade in two months (−$0.39) before the model was retired.
+    </ArchivedBanner>
+
     <!-- Loading -->
     <div v-if="statusPending" class="py-16 text-center text-ink-3">Loading...</div>
 

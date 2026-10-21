@@ -180,19 +180,57 @@ def extract_anomaly_features(df: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
-def build_feature_matrix():
-    """Build complete feature matrix from all data sources."""
-    print('[features] Loading correlation events...')
-    corr = load_correlations()
-    print(f'  → {len(corr)} correlation events loaded')
+def assert_no_dead_features(df, feature_cols, missing_threshold=0.95):
+    """Fail the build if a declared feature carries no information.
 
-    if corr.empty:
-        print('[features] No correlation events found. Run stocks:anomalies and stocks:backtest first.')
+    A feature that is all-NaN or constant trains and scores without complaint:
+    NaN becomes the column median, the median of an all-NaN column is NaN, and
+    np.nan_to_num turns that into 0. The model then learns a constant, the
+    feature shows importance exactly 0.0, and nobody notices.
+
+    That is precisely how avg_article_sentiment stayed dead for the entire life
+    of this pipeline, and how three BTC news features stayed dead for four
+    months. Loudly refusing to build is the cheapest insurance available.
+    """
+    dead = []
+    for col in feature_cols:
+        if col not in df.columns:
+            dead.append((col, 'missing from frame'))
+            continue
+        s = df[col]
+        missing = float(s.isna().mean())
+        if missing >= missing_threshold:
+            dead.append((col, f'{missing:.0%} missing'))
+        elif s.nunique(dropna=True) <= 1:
+            dead.append((col, 'constant'))
+
+    if dead:
+        print('[features] DEAD FEATURES — refusing to build:', file=sys.stderr)
+        for col, why in dead:
+            print(f'  {col}: {why}', file=sys.stderr)
+        print('[features] Fix the source of these columns, or remove them from '
+              'the feature list. A constant feature is never a harmless one.',
+              file=sys.stderr)
         sys.exit(1)
 
-    print('[features] Loading price history...')
-    prices = load_price_history()
-    print(f'  → {len(prices)} daily price records loaded')
+
+def build_features_from_correlations(corr: pd.DataFrame, prices: pd.DataFrame,
+                                     panel: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Derive the full feature frame for a set of anomaly events.
+
+    This is the single definition of what a feature vector is. Training
+    (build_feature_matrix) and serving (predict.extract_features_for_prediction)
+    both call it, because for most of this pipeline's life predict.py carried a
+    hand-copy that computed 47 of the 54 features and silently filled the other
+    seven with zero — including vol_relative, LightGBM's third-heaviest split.
+    A model scored on a vector it was never trained on is not a model.
+
+    `panel` supplies the cross-sectional and historical context (all known
+    events). It defaults to `corr`, which is right for a full training build; at
+    serving time the caller passes the full event history so a seven-day batch
+    does not silently see a smaller world than training did.
+    """
+    panel = corr if panel is None else panel
 
     print('[features] Computing technical indicators...')
     tech = compute_technical_features(prices)
@@ -218,6 +256,7 @@ def build_feature_matrix():
     # Event type one-hot
     df['is_3x_spike'] = (df['event_type'] == 'volume_spike_3x').astype(int)
     df['is_2x_spike'] = (df['event_type'] == 'volume_spike_2x').astype(int)
+    df['is_1_5x_spike'] = (df['event_type'] == 'volume_spike_1_5x').astype(int)
     df['is_source_spike'] = (df['event_type'] == 'source_diversity_spike').astype(int)
 
     # Event day price change
@@ -272,11 +311,22 @@ def build_feature_matrix():
     # Sentiment features (from article entities if available)
     print('[features] Loading article sentiment data...')
     try:
-        sentiment = db.query("""
+        # article_entities.sentiment is varchar(50) holding two formats: labels
+        # ('positive'/'negative'/'neutral') written by the classifier up to
+        # 2026-04-19, and numeric FinBERT scores written by ml/sentiment.py since.
+        # AVG() over a varchar raises in Postgres, which is why this feature has
+        # been an all-NaN column for its entire existence. Same expression as
+        # ENTITY_SENTIMENT_AVG in server/services/btcFeatureBuilder.ts.
+        sentiment = db.query(r"""
             SELECT
                 ae.entity_id,
                 DATE(a.published_at) as pub_date,
-                AVG(ae.sentiment) as avg_sentiment
+                AVG(CASE
+                    WHEN ae.sentiment ~ '^-?[0-9]+(\.[0-9]+)?$' THEN ae.sentiment::float
+                    WHEN ae.sentiment = 'positive' THEN 1
+                    WHEN ae.sentiment = 'negative' THEN -1
+                    WHEN ae.sentiment = 'neutral'  THEN 0
+                    ELSE NULL END) as avg_sentiment
             FROM article_entities ae
             JOIN articles a ON a.id = ae.article_id
             WHERE ae.sentiment IS NOT NULL
@@ -292,13 +342,24 @@ def build_feature_matrix():
             )
         else:
             df['avg_article_sentiment'] = np.nan
-    except Exception:
+    except Exception as e:
+        # Do not swallow this silently: a failure here yields an all-NaN feature
+        # that trains and scores without complaint, so it has to be visible.
+        print(f'[features] WARNING: sentiment feature unavailable, filling with NaN '
+              f'({type(e).__name__}: {e})')
         df['avg_article_sentiment'] = np.nan
 
-    # Cross-ticker: sector anomaly count (same sector, same day)
+    # Cross-ticker: sector anomaly count (same sector, same day).
+    # Counted over `panel`, not over `df`: at serving time df holds only the last
+    # few days of events, so counting within it would understate the true
+    # cross-section and produce a feature the model never saw in training.
     if 'sector' in df.columns and 'sector_anomaly_count' not in df.columns:
-        sector_day_counts = df.groupby(['sector', 'event_date_only']).size().reset_index(name='sector_anomaly_count')
+        panel_sector = panel.copy()
+        panel_sector['event_date_only'] = pd.to_datetime(panel_sector['event_date']).dt.date
+        sector_day_counts = (panel_sector.groupby(['sector', 'event_date_only'])
+                             .size().reset_index(name='sector_anomaly_count'))
         df = df.merge(sector_day_counts, on=['sector', 'event_date_only'], how='left')
+        df['sector_anomaly_count'] = df['sector_anomaly_count'].fillna(1)
     elif 'sector_anomaly_count' not in df.columns:
         df['sector_anomaly_count'] = 1
 
@@ -325,31 +386,72 @@ def build_feature_matrix():
                              (df.get('spy_20d_return', pd.Series(np.nan, index=df.index)).fillna(0) / 4)  # ~5d equivalent
 
     # --- Ticker Event History ---
-    # How many anomalies this ticker has had recently (repeated signals may be weaker)
-    df_sorted = df.sort_values('event_date')
-    ticker_counts = []
-    for _, row in df_sorted.iterrows():
-        mask = (df_sorted['watchlist_id'] == row['watchlist_id']) & \
-               (pd.to_datetime(df_sorted['event_date']) < pd.to_datetime(row['event_date'])) & \
-               (pd.to_datetime(df_sorted['event_date']) >= pd.to_datetime(row['event_date']) - pd.Timedelta(days=30))
-        ticker_counts.append(mask.sum())
-    df['ticker_event_count_30d'] = ticker_counts
+    # How many anomalies this ticker has had in the preceding 30 days (repeated
+    # signals may be weaker). Counted over `panel` so a 7-day scoring batch sees
+    # the same history the training rows did, and via searchsorted so this is not
+    # the O(n^2) row loop that made it too slow to compute at serving time — the
+    # reason it used to be silently zero-filled there.
+    panel_hist = panel[['watchlist_id', 'event_date']].copy()
+    panel_hist['event_dt'] = pd.to_datetime(panel_hist['event_date'])
+    by_ticker = {wid: np.sort(g['event_dt'].values)
+                 for wid, g in panel_hist.groupby('watchlist_id')}
+
+    event_dt_series = pd.to_datetime(df['event_date'])
+    counts = []
+    for wid, when in zip(df['watchlist_id'], event_dt_series):
+        history = by_ticker.get(wid)
+        if history is None or len(history) == 0:
+            counts.append(0)
+            continue
+        window_start = np.datetime64(when - pd.Timedelta(days=30))
+        lo = np.searchsorted(history, window_start, side='left')
+        hi = np.searchsorted(history, np.datetime64(when), side='left')
+        counts.append(int(hi - lo))
+    df['ticker_event_count_30d'] = counts
+
+    return df
+
+
+def build_feature_matrix():
+    """Build complete feature matrix from all data sources."""
+    print('[features] Loading correlation events...')
+    corr = load_correlations()
+    print(f'  → {len(corr)} correlation events loaded')
+
+    if corr.empty:
+        print('[features] No correlation events found. Run stocks:anomalies and stocks:backtest first.')
+        sys.exit(1)
+
+    print('[features] Loading price history...')
+    prices = load_price_history()
+    print(f'  → {len(prices)} daily price records loaded')
+
+    df = build_features_from_correlations(corr, prices)
 
     # --- Target Variables ---
-    df['target_5d_up'] = (df['change_5d'].astype(float) > 0.5).astype(int)
-    df['target_5d_change'] = df['change_5d'].astype(float)
-    df['target_4w_up'] = (df['change_4w'].astype(float) > 1.0).astype(int)
-    df['target_4w_change'] = df['change_4w'].astype(float)
+    # An event whose forward window has no price data has an UNKNOWN outcome, not
+    # a negative one. Comparisons against NaN evaluate to False, so casting them
+    # straight to int would label every such event as "did not rise" and train the
+    # models to be systematically bearish. Keep them NaN so the dropna below
+    # removes them from the training set.
+    change_4w = df['change_4w'].astype(float)
 
-    # Alpha targets (stock vs SPY)
-    bm_5d = df['benchmark_change_5d'].astype(float).fillna(0)
-    df['target_5d_alpha'] = (df['change_5d'].astype(float) - bm_5d > 0).astype(int)
+    # Raw return targets
+    df['target_4w_up'] = (change_4w > 1.0).astype(float).where(change_4w.notna())
+    df['target_4w_change'] = change_4w
+
+    # Alpha target (stock vs SPY benchmark — removes market regime noise).
+    # This is the only deployed label: with a 28-day horizon over ~8 months, the
+    # raw-return label has roughly 8 independent market windows behind it, so it
+    # is a market-direction label wearing a per-ticker name.
+    bm_4w = df['benchmark_change_4w'].astype(float).fillna(0)
+    df['target_4w_alpha'] = (change_4w - bm_4w > 0).astype(float).where(change_4w.notna())
 
     # --- Select final feature columns ---
     # Define the feature column groups
     anomaly_cols = ['multiplier', 'confidence', 'source_count', 'mention_count',
                     'new_keyword_count']
-    event_type_cols = ['is_3x_spike', 'is_2x_spike', 'is_source_spike']
+    event_type_cols = ['is_3x_spike', 'is_2x_spike', 'is_1_5x_spike', 'is_source_spike']
     baseline_cols = ['baseline_avg', 'baseline_stddev', 'baseline_cv']
     price_cols = ['event_day_change_pct', 'pre_event_5d_return',
                   'pre_event_10d_return', 'pre_event_20d_return']
@@ -372,8 +474,8 @@ def build_feature_matrix():
                     cross_cols + interaction_cols + relative_cols +
                     history_cols + sector_cols)
 
-    target_cols = ['target_5d_up', 'target_5d_change', 'target_4w_up',
-                   'target_4w_change', 'target_5d_alpha']
+    target_cols = ['target_4w_up', 'target_4w_change',
+                   'target_4w_alpha']
     id_cols = ['correlation_id', 'watchlist_id', 'ticker', 'event_date', 'event_type']
 
     # Keep only columns that exist
@@ -386,18 +488,36 @@ def build_feature_matrix():
     # Drop any duplicate columns from merges
     result = result.loc[:, ~result.columns.duplicated()]
 
-    # Fill NaN for numeric features with median
+    # Fill NaN for numeric features with median, and record the values used.
+    # Serving must impute with these same numbers: imputing from the current
+    # batch means a three-row nightly batch defines its own idea of "normal".
+    imputation = {}
     for col in feature_cols:
         if col not in result.columns:
             continue
         s = result[col]
         if s.dtype in [np.float64, np.float32, float, 'float64', 'float32']:
-            result[col] = s.fillna(s.median())
+            median = s.median()
+            imputation[col] = None if pd.isna(median) else float(median)
+            result[col] = s.fillna(median)
         elif s.dtype in [np.int64, np.int32, int, 'int64', 'int32']:
+            imputation[col] = 0
             result[col] = s.fillna(0)
 
-    # Drop rows where all targets are NaN (no backtest data)
-    result = result.dropna(subset=['target_5d_change', 'target_4w_change'], how='all')
+    # Drop rows with no 4-week outcome (no backtest data). Use how='any' rather
+    # than how='all': with 'all', a single target that never goes NaN silently
+    # keeps every unlabelled row in the training set.
+    before = len(result)
+    result = result.dropna(subset=['target_4w_change', 'target_4w_alpha'], how='any')
+    if before != len(result):
+        print(f'[features] Dropped {before - len(result)} events with no 4w outcome '
+              f'({len(result)} labelled samples remain)')
+
+    # Guaranteed non-NaN after the drop; restore integer dtype for the classifiers.
+    result['target_4w_up'] = result['target_4w_up'].astype(int)
+    result['target_4w_alpha'] = result['target_4w_alpha'].astype(int)
+
+    assert_no_dead_features(result, feature_cols)
 
     # Save feature column names for inference
     feature_meta = {
@@ -412,6 +532,9 @@ def build_feature_matrix():
     with open(meta_path, 'w') as f:
         json.dump(feature_meta, f, indent=2)
 
+    with open(meta_path.parent / 'feature_imputation.json', 'w') as f:
+        json.dump(imputation, f, indent=2)
+
     return result, feature_cols, target_cols
 
 
@@ -423,8 +546,8 @@ def main():
         print(f'  Use --force to re-extract.')
         existing = pd.read_parquet(OUTPUT_PATH)
         print(f'  → Shape: {existing.shape}')
-        print(f'  → Samples with 5d target: {existing["target_5d_up"].notna().sum()}')
         print(f'  → Samples with 4w target: {existing["target_4w_up"].notna().sum()}')
+        print(f'  → Samples with 4w alpha target: {existing["target_4w_alpha"].notna().sum() if "target_4w_alpha" in existing.columns else "N/A"}')
         return
 
     result, feature_cols, target_cols = build_feature_matrix()
@@ -433,8 +556,8 @@ def main():
     print(f'\n[features] Feature matrix saved to {OUTPUT_PATH}')
     print(f'  → Shape: {result.shape}')
     print(f'  → Features: {len(feature_cols)}')
-    print(f'  → Samples with 5d target: {result["target_5d_up"].notna().sum()}')
     print(f'  → Samples with 4w target: {result["target_4w_up"].notna().sum()}')
+    print(f'  → Samples with 4w alpha target: {result["target_4w_alpha"].notna().sum()}')
     print(f'  → Tickers: {result["ticker"].nunique()}')
     print(f'  → Date range: {result["event_date"].min()} to {result["event_date"].max()}')
 

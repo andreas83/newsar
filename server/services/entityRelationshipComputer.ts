@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '../database/db'
+import { parseEntitySentiment } from '../utils/entitySentiment'
 import {
   entities,
   articleEntities,
@@ -228,13 +229,8 @@ function computeRelationshipMetrics(pairs: EntityPair[]): RelationshipData {
  * Returns -1 to 1 correlation score
  */
 function computeSentimentCorrelation(pairs: EntityPair[]): number | null {
-  // Convert sentiment strings to numeric values
-  const sentimentToValue = (s: string | null): number | null => {
-    if (!s) return null
-    if (s === 'positive') return 1
-    if (s === 'negative') return -1
-    return 0 // neutral
-  }
+  // Both storage formats — see server/utils/entitySentiment.ts.
+  const sentimentToValue = parseEntitySentiment
 
   const validPairs = pairs.filter(p => p.sourceSentiment && p.targetSentiment)
 

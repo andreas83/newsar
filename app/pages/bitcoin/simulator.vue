@@ -69,6 +69,11 @@ function rankBadge(rank: number): string {
     </div>
     <BitcoinSubNav />
 
+    <ArchivedBanner title="Simulator retired" retired-on="23 August 2026"
+      reference="See BTC_MODEL_ASSESSMENT.md for the full analysis.">
+      The ML Model and Random portfolios are closed and no longer trade. Buy &amp; Hold remains live as the benchmark. Final standings: ML −1.7%, Random +2.3%, Buy &amp; Hold +23.2%.
+    </ArchivedBanner>
+
     <div v-if="leaderboardPending" class="py-16 text-center text-ink-3">Loading...</div>
 
     <div v-else-if="!leaderboard?.portfolios?.length" class="py-16 text-center">

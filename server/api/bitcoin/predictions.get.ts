@@ -31,6 +31,9 @@ export default defineEventHandler(async (event) => {
              confidence, top_features, status, expires_at, created_at
       FROM btc_predictions
       WHERE status = 'active'
+        -- The model was retired on 2026-08-23, so nothing flips these to 'expired';
+        -- without this the last call kept showing as current weeks after its horizon.
+        AND (expires_at IS NULL OR expires_at > NOW())
       ORDER BY prediction_date DESC, confidence DESC
     `)
 

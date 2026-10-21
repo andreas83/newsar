@@ -604,14 +604,25 @@ export const stockRecommendations = pgTable('stock_recommendations', {
   eventDate: timestamp('event_date').notNull(),
   triggerMetadata: jsonb('trigger_metadata'),
   modelSource: varchar('model_source', { length: 20 }).notNull().default('heuristic'),
+  // Legacy: the 5-day models were dropped in June 2026 and nothing has written
+  // these since. Kept as columns so existing rows are readable; do not add
+  // writers — use the 4w fields below.
   mlProbUp5d: real('ml_prob_up_5d'),
   mlExpectedChange5d: real('ml_expected_change_5d'),
   mlProbUp4w: real('ml_prob_up_4w'),
+  // The probability that actually sets signalDirection (0021_evaluation_contract).
+  mlProbAlpha4w: real('ml_prob_alpha_4w'),
   mlConfidence: real('ml_confidence'),
+  // Contract hash in force when this row was scored; null = pre-contract cohort.
+  modelVersion: varchar('model_version', { length: 40 }),
+  // When the model scored the event, as opposed to when the event happened.
+  scoredAt: timestamp('scored_at'),
   status: varchar('status', { length: 20 }).notNull().default('active'),
   expiresAt: timestamp('expires_at'),
   actualChange5d: real('actual_change_5d'),
   actualChange4w: real('actual_change_4w'),
+  // SPY over the same window, so the alpha label can be reconstructed.
+  actualBenchmarkChange4w: real('actual_benchmark_change_4w'),
   validatedAt: timestamp('validated_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -684,4 +695,227 @@ export const paperPortfolioSnapshots = pgTable('paper_portfolio_snapshots', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   portfolioDateIdx: index('paper_snapshots_portfolio_date_idx').on(table.portfolioId, table.snapshotDate),
+}))
+
+// ============================================================
+// BTC Tables
+// ============================================================
+
+// Daily/hourly BTC price data
+export const btcPrices = pgTable('btc_prices', {
+  id: serial('id').primaryKey(),
+  price: real('price').notNull(),
+  openPrice: real('open_price'),
+  highPrice: real('high_price'),
+  lowPrice: real('low_price'),
+  volume24h: real('volume_24h'),
+  marketCap: real('market_cap'),
+  changePercent24h: real('change_percent_24h'),
+  source: varchar('source', { length: 50 }).default('coingecko'),
+  fetchedAt: timestamp('fetched_at').notNull(),
+}, (table) => ({
+  fetchedAtIdx: index('btc_prices_fetched_at_idx').on(table.fetchedAt.desc()),
+  sourceFetchedIdx: index('btc_prices_source_fetched_idx').on(table.source, table.fetchedAt.desc()),
+}))
+
+// Pre-computed daily feature rows for ML
+export const btcDailyFeatures = pgTable('btc_daily_features', {
+  id: serial('id').primaryKey(),
+  featureDate: timestamp('feature_date', { mode: 'date' }).notNull(),
+  features: jsonb('features'), // full feature vector
+  target7dChange: real('target_7d_change'),
+  target14dChange: real('target_14d_change'),
+  target7dUp: boolean('target_7d_up'),
+  target14dUp: boolean('target_14d_up'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  featureDateIdx: uniqueIndex('btc_daily_features_date_idx').on(table.featureDate),
+}))
+
+// ML model predictions
+export const btcPredictions = pgTable('btc_predictions', {
+  id: serial('id').primaryKey(),
+  predictionDate: timestamp('prediction_date', { mode: 'date' }).notNull(),
+  modelSource: varchar('model_source', { length: 50 }).notNull(), // 'xgb_2w', 'lgbm_2w', 'ensemble'
+  direction: varchar('direction', { length: 20 }).notNull(), // 'bullish', 'bearish', 'neutral'
+  probUp2w: real('prob_up_2w'),
+  confidence: real('confidence'),
+  topFeatures: jsonb('top_features'),
+  status: varchar('status', { length: 20 }).default('active'), // 'active', 'expired', 'validated'
+  actualChange2w: real('actual_change_2w'),
+  validatedAt: timestamp('validated_at'),
+  expiresAt: timestamp('expires_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  predDateModelIdx: uniqueIndex('btc_predictions_date_model_idx').on(table.predictionDate, table.modelSource),
+  statusIdx: index('btc_predictions_status_idx').on(table.status),
+  createdAtIdx: index('btc_predictions_created_at_idx').on(table.createdAt.desc()),
+}))
+
+// Paper trading accounts for 3 strategies
+export const btcSimPortfolios = pgTable('btc_sim_portfolios', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 100 }).notNull(),
+  strategy: varchar('strategy', { length: 50 }).notNull(), // 'ml_model', 'random', 'buy_and_hold'
+  initialCapital: real('initial_capital').notNull().default(100000),
+  currentCapital: real('current_capital').notNull().default(100000),
+  currentValue: real('current_value').notNull().default(100000),
+  totalTrades: integer('total_trades').default(0),
+  winningTrades: integer('winning_trades').default(0),
+  totalPnl: real('total_pnl').default(0),
+  maxDrawdown: real('max_drawdown').default(0),
+  sharpeRatio: real('sharpe_ratio'),
+  randomSeed: integer('random_seed'), // for reproducible random strategy
+  isActive: boolean('is_active').default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+})
+
+// Individual BTC trades
+export const btcSimTrades = pgTable('btc_sim_trades', {
+  id: serial('id').primaryKey(),
+  portfolioId: integer('portfolio_id').references(() => btcSimPortfolios.id).notNull(),
+  predictionId: integer('prediction_id').references(() => btcPredictions.id),
+  direction: varchar('direction', { length: 10 }).notNull(), // 'long', 'short'
+  entryPrice: real('entry_price').notNull(),
+  entryDate: timestamp('entry_date').notNull(),
+  btcAmount: real('btc_amount').notNull(), // fractional BTC
+  positionSize: real('position_size').notNull(), // USD value
+  exitPrice: real('exit_price'),
+  exitDate: timestamp('exit_date'),
+  pnl: real('pnl'),
+  pnlPercent: real('pnl_percent'),
+  status: varchar('status', { length: 20 }).default('open'),
+  stopLoss: real('stop_loss'),
+  takeProfit: real('take_profit'),
+  exitReason: varchar('exit_reason', { length: 50 }),
+  metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  portfolioIdx: index('btc_sim_trades_portfolio_idx').on(table.portfolioId),
+  statusIdx: index('btc_sim_trades_status_idx').on(table.status),
+  predictionIdx: index('btc_sim_trades_prediction_idx').on(table.predictionId),
+}))
+
+// Daily equity curve
+export const btcSimSnapshots = pgTable('btc_sim_snapshots', {
+  id: serial('id').primaryKey(),
+  portfolioId: integer('portfolio_id').references(() => btcSimPortfolios.id).notNull(),
+  snapshotDate: timestamp('snapshot_date', { mode: 'date' }).notNull(),
+  capital: real('capital').notNull(),
+  portfolioValue: real('portfolio_value').notNull(),
+  openPositions: integer('open_positions').default(0),
+  dailyPnl: real('daily_pnl').default(0),
+  cumulativePnl: real('cumulative_pnl').default(0),
+  drawdown: real('drawdown').default(0),
+  btcPrice: real('btc_price'), // BTC price for benchmark overlay
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  portfolioDateIdx: index('btc_sim_snapshots_portfolio_date_idx').on(table.portfolioId, table.snapshotDate),
+}))
+
+// ============================================================
+// BTC Live Trading Tables
+// ============================================================
+
+// Single live trading account
+export const btcLivePortfolio = pgTable('btc_live_portfolio', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 100 }).notNull().default('Live BTC Trading'),
+  environment: varchar('environment', { length: 20 }).notNull().default('testnet'), // 'testnet' or 'live'
+  initialCapital: real('initial_capital').notNull().default(10000),
+  allocatedCapital: real('allocated_capital').notNull().default(10000), // USDT allocated for trading
+  currentCapital: real('current_capital').notNull().default(10000),
+  currentValue: real('current_value').notNull().default(10000),
+  totalTrades: integer('total_trades').default(0),
+  winningTrades: integer('winning_trades').default(0),
+  totalPnl: real('total_pnl').default(0),
+  totalFees: real('total_fees').default(0),
+  maxDrawdown: real('max_drawdown').default(0),
+  dailyPnlToday: real('daily_pnl_today').default(0),
+  dailyPnlDate: varchar('daily_pnl_date', { length: 10 }), // 'YYYY-MM-DD'
+  isActive: boolean('is_active').default(true).notNull(),
+  haltReason: text('halt_reason'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+})
+
+// Live trades with exchange order data
+export const btcLiveTrades = pgTable('btc_live_trades', {
+  id: serial('id').primaryKey(),
+  portfolioId: integer('portfolio_id').references(() => btcLivePortfolio.id).notNull(),
+  predictionId: integer('prediction_id').references(() => btcPredictions.id),
+  direction: varchar('direction', { length: 10 }).notNull(), // 'long' only for spot
+  entryPrice: real('entry_price').notNull(),
+  entryDate: timestamp('entry_date').notNull(),
+  btcAmount: real('btc_amount').notNull(),
+  positionSize: real('position_size').notNull(), // USD value
+  exitPrice: real('exit_price'),
+  exitDate: timestamp('exit_date'),
+  pnl: real('pnl'),
+  pnlPercent: real('pnl_percent'),
+  entryFee: real('entry_fee').default(0),
+  exitFee: real('exit_fee').default(0),
+  status: varchar('status', { length: 20 }).default('open'),
+  stopLoss: real('stop_loss'),
+  takeProfit: real('take_profit'),
+  exitReason: varchar('exit_reason', { length: 50 }),
+  entryOrderId: varchar('entry_order_id', { length: 100 }),
+  exitOrderId: varchar('exit_order_id', { length: 100 }),
+  exchangeEnvironment: varchar('exchange_environment', { length: 20 }).default('testnet'),
+  exchangeMetadata: jsonb('exchange_metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  portfolioIdx: index('btc_live_trades_portfolio_idx').on(table.portfolioId),
+  statusIdx: index('btc_live_trades_status_idx').on(table.status),
+  predictionIdx: index('btc_live_trades_prediction_idx').on(table.predictionId),
+}))
+
+// Daily equity curve with exchange balance reconciliation
+export const btcLiveSnapshots = pgTable('btc_live_snapshots', {
+  id: serial('id').primaryKey(),
+  portfolioId: integer('portfolio_id').references(() => btcLivePortfolio.id).notNull(),
+  snapshotDate: timestamp('snapshot_date', { mode: 'date' }).notNull(),
+  capital: real('capital').notNull(),
+  portfolioValue: real('portfolio_value').notNull(),
+  exchangeBalance: real('exchange_balance'), // Reconciliation: actual USDT on exchange
+  openPositions: integer('open_positions').default(0),
+  dailyPnl: real('daily_pnl').default(0),
+  cumulativePnl: real('cumulative_pnl').default(0),
+  drawdown: real('drawdown').default(0),
+  btcPrice: real('btc_price'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  portfolioDateIdx: index('btc_live_snapshots_portfolio_date_idx').on(table.portfolioId, table.snapshotDate),
+  portfolioDateUnique: unique('btc_live_snapshots_portfolio_date_unique').on(table.portfolioId, table.snapshotDate),
+}))
+
+// Append-only audit log for all live trading actions
+export const btcLiveAuditLog = pgTable('btc_live_audit_log', {
+  id: serial('id').primaryKey(),
+  portfolioId: integer('portfolio_id').references(() => btcLivePortfolio.id).notNull(),
+  action: varchar('action', { length: 50 }).notNull(), // 'trade_open', 'trade_close', 'safety_halt', 'kill_switch', 'balance_sync', etc.
+  tradeId: integer('trade_id'),
+  environment: varchar('environment', { length: 20 }).notNull().default('testnet'),
+  details: jsonb('details'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  portfolioIdx: index('btc_live_audit_log_portfolio_idx').on(table.portfolioId),
+  actionIdx: index('btc_live_audit_log_action_idx').on(table.action),
+  createdAtIdx: index('btc_live_audit_log_created_at_idx').on(table.createdAt.desc()),
+}))
+
+// Known calendar events
+export const btcCalendarEvents = pgTable('btc_calendar_events', {
+  id: serial('id').primaryKey(),
+  eventDate: timestamp('event_date', { mode: 'date' }).notNull(),
+  eventType: varchar('event_type', { length: 50 }).notNull(), // 'fomc', 'us_holiday', 'tax_deadline', etc.
+  name: varchar('name', { length: 255 }),
+  expectedImpact: varchar('expected_impact', { length: 20 }).default('medium'), // 'high', 'medium', 'low'
+  metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  eventDateIdx: index('btc_calendar_events_date_idx').on(table.eventDate),
+  eventTypeIdx: index('btc_calendar_events_type_idx').on(table.eventType),
 }))

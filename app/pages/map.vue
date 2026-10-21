@@ -1,4 +1,6 @@
 <script setup lang="ts">
+const cartoTileUrl = useCartoTileUrl('dark_all')
+
 type Hotspot = {
   id: number
   name: string
@@ -272,7 +274,7 @@ onMounted(async () => {
     scrollWheelZoom: true,
   })
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  L.tileLayer(cartoTileUrl, {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
     subdomains: 'abcd',
     maxZoom: 19,

@@ -2,19 +2,20 @@
 ML Prediction Script.
 
 Takes recent anomaly events (no outcome yet), extracts features,
-runs through trained model, outputs predictions as JSON to stdout.
+runs through trained 4-week models, outputs predictions as JSON to stdout.
 
 Usage: python predict.py [--since 7]
   --since N: Score anomalies from last N days (default: 7)
 
 Output: JSON array of {
     correlation_id, ticker, event_type, event_date,
-    prob_up_5d, expected_change_5d, prob_up_4w, expected_change_4w,
+    prob_up_4w, prob_alpha_4w,
     confidence, top_features
 }
 """
 
 import json
+import contextlib
 import sys
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def load_models():
     """Load all trained models."""
     models = {}
 
-    for name in ['xgb_5d_classifier', 'xgb_5d_regressor', 'xgb_4w_classifier', 'logreg_baseline']:
+    for name in ['xgb_4w_classifier', 'xgb_4w_alpha_classifier', 'lgbm_4w_classifier', 'logreg_baseline']:
         path = MODELS_DIR / f'{name}.joblib'
         if path.exists():
             models[name] = joblib.load(path)
@@ -72,79 +73,53 @@ def get_recent_anomalies(days_back: int) -> pd.DataFrame:
 
 
 def extract_features_for_prediction(anomalies: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-    """Extract features for prediction, matching the training feature set."""
-    # Use the same feature extraction logic as features.py but simplified
-    # for real-time prediction (no target variables needed)
+    """Build the serving feature vector using the training code path.
 
-    from features import (load_price_history, compute_technical_features,
-                          compute_spy_features, extract_anomaly_features)
+    This used to be a hand-copy of features.py that computed 47 of the 54
+    features and filled the rest with 0 — vol_relative (LightGBM's third-heaviest
+    split), rsi_vs_spy, the three interaction terms, momentum_vs_spy and
+    ticker_event_count_30d all arrived at the model as zero. There is now exactly
+    one definition of a feature vector, in features.build_features_from_correlations.
+    """
+    from features import (load_price_history, load_correlations,
+                          build_features_from_correlations)
 
     prices = load_price_history()
-    tech = compute_technical_features(prices)
-    spy = compute_spy_features(prices)
-    anomaly_feats = extract_anomaly_features(anomalies)
+    # Full event history, so cross-sectional and 30-day-history features see the
+    # same world they saw during training rather than just this batch.
+    panel = load_correlations()
 
-    df = anomalies.copy()
-    df['event_date_only'] = pd.to_datetime(df['event_date']).dt.date
+    df = build_features_from_correlations(anomalies, prices, panel=panel)
 
-    # Merge anomaly metadata
-    df = df.merge(anomaly_feats, on='correlation_id', how='left')
+    # Sector one-hots are structurally zero for sectors absent from this batch,
+    # and the event-type flags are always computed. Anything else missing is a
+    # train/serve divergence and must stop the run rather than quietly score.
+    missing = [c for c in feature_cols if c not in df.columns]
+    structural = [c for c in missing if c.startswith('sector_')]
+    divergent = [c for c in missing if c not in structural]
+    if divergent:
+        print(f'[predict] FATAL: {len(divergent)} feature(s) not produced by the '
+              f'feature builder: {", ".join(divergent)}', file=sys.stderr)
+        print('[predict] Scoring on a vector the model was not trained on is '
+              'worse than not scoring at all.', file=sys.stderr)
+        sys.exit(1)
+    for col in structural:
+        df[col] = 0
 
-    # Event type one-hot
-    df['is_3x_spike'] = (df['event_type'] == 'volume_spike_3x').astype(int)
-    df['is_2x_spike'] = (df['event_type'] == 'volume_spike_2x').astype(int)
-    df['is_source_spike'] = (df['event_type'] == 'source_diversity_spike').astype(int)
-
-    # Event day price change
-    df['event_day_change_pct'] = df['price_change_percent'].fillna(0).astype(float)
-
-    # Technical features
-    if not tech.empty:
-        tech['trade_date'] = pd.to_datetime(tech['trade_date']).dt.date
-        df = df.merge(tech, left_on=['watchlist_id', 'event_date_only'],
-                      right_on=['watchlist_id', 'trade_date'], how='left')
-        df.rename(columns={
-            'return_5d': 'pre_event_5d_return',
-            'return_10d': 'pre_event_10d_return',
-            'return_20d': 'pre_event_20d_return',
-        }, inplace=True)
-
-    # SPY features
-    if not spy.empty:
-        spy['trade_date'] = pd.to_datetime(spy['trade_date']).dt.date
-        df = df.merge(spy, left_on='event_date_only', right_on='trade_date',
-                      how='left', suffixes=('', '_spy'))
-
-    # Sector one-hot
-    if 'sector' in df.columns and df['sector'].notna().any():
-        sector_dummies = pd.get_dummies(df['sector'], prefix='sector')
-        df = pd.concat([df, sector_dummies], axis=1)
-
-    # Temporal
-    event_dt = pd.to_datetime(df['event_date'])
-    df['day_of_week'] = event_dt.dt.dayofweek
-    df['month'] = event_dt.dt.month
-    df['is_earnings_season'] = event_dt.dt.month.isin([1, 4, 7, 10]).astype(int)
-
-    # Sentiment placeholder
-    df['avg_article_sentiment'] = np.nan
-
-    # Cross-ticker sector count
-    if 'sector' in df.columns:
-        sector_day_counts = df.groupby(['sector', 'event_date_only']).size().reset_index(name='sector_anomaly_count')
-        df = df.merge(sector_day_counts, on=['sector', 'event_date_only'], how='left')
+    # Impute with the medians recorded at training time, never with this batch's
+    # own medians — a three-row nightly batch must not redefine "normal".
+    imputation_path = MODELS_DIR / 'feature_imputation.json'
+    imputation = {}
+    if imputation_path.exists():
+        with open(imputation_path) as f:
+            imputation = json.load(f)
     else:
-        df['sector_anomaly_count'] = 1
+        print('[predict] WARNING: no feature_imputation.json; run ml:features to '
+              'regenerate it. Falling back to zero-fill.', file=sys.stderr)
 
-    # Ensure all expected columns exist (fill missing with 0)
     for col in feature_cols:
-        if col not in df.columns:
-            df[col] = 0
-
-    # Fill NaN
-    for col in feature_cols:
-        if df[col].dtype in [np.float64, np.float32, float]:
-            df[col] = df[col].fillna(df[col].median() if df[col].notna().any() else 0)
+        fill = imputation.get(col, 0)
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0 if fill is None else fill)
 
     return df
 
@@ -164,7 +139,11 @@ def predict(days_back: int = 7):
 
     print(f'Scoring {len(anomalies)} anomalies from last {days_back} days...', file=sys.stderr)
 
-    df = extract_features_for_prediction(anomalies, feature_cols)
+    # stdout is reserved for the JSON result; the feature builder prints progress,
+    # which corrupted the output and silently broke every nightly run from 2026-08-23.
+    with contextlib.redirect_stdout(sys.stderr):
+        df = extract_features_for_prediction(anomalies, feature_cols)
+    df = df.reset_index(drop=True)
 
     X = df[feature_cols].values.astype(np.float32)
     X = np.nan_to_num(X, 0)
@@ -181,37 +160,40 @@ def predict(days_back: int = 7):
 
         xi = X[i:i+1]
 
-        # 5d classifier
-        if 'xgb_5d_classifier' in models:
-            model = models['xgb_5d_classifier']
-            prob = float(model.predict_proba(xi)[0, 1])
-            pred['prob_up_5d'] = round(prob, 4)
+        # 4w classifier — ensemble XGBoost + LightGBM (average probabilities)
+        prob_up_sources = []
+        if 'xgb_4w_classifier' in models:
+            prob = float(models['xgb_4w_classifier'].predict_proba(xi)[0, 1])
+            pred['prob_up_4w_xgb'] = round(prob, 4)
+            prob_up_sources.append(prob)
+        if 'lgbm_4w_classifier' in models:
+            prob = float(models['lgbm_4w_classifier'].predict_proba(xi)[0, 1])
+            pred['prob_up_4w_lgbm'] = round(prob, 4)
+            prob_up_sources.append(prob)
+
+        if prob_up_sources:
+            pred['prob_up_4w'] = round(float(np.mean(prob_up_sources)), 4)
         elif 'logreg_baseline' in models:
             model = models['logreg_baseline']
             xi_scaled = model._scaler.transform(xi)
             prob = float(model.predict_proba(xi_scaled)[0, 1])
-            pred['prob_up_5d'] = round(prob, 4)
-
-        # 5d regressor
-        if 'xgb_5d_regressor' in models:
-            model = models['xgb_5d_regressor']
-            pred['expected_change_5d'] = round(float(model.predict(xi)[0]), 4)
-
-        # 4w classifier
-        if 'xgb_4w_classifier' in models:
-            model = models['xgb_4w_classifier']
-            prob = float(model.predict_proba(xi)[0, 1])
             pred['prob_up_4w'] = round(prob, 4)
 
-        # Confidence: average of classifier probabilities (distance from 0.5)
-        probs = [pred.get('prob_up_5d', 0.5), pred.get('prob_up_4w', 0.5)]
+        # 4w alpha classifier (outperform SPY)
+        if 'xgb_4w_alpha_classifier' in models:
+            model = models['xgb_4w_alpha_classifier']
+            prob = float(model.predict_proba(xi)[0, 1])
+            pred['prob_alpha_4w'] = round(prob, 4)
+
+        # Confidence: average of all 4w classifier probabilities (distance from 0.5)
+        probs = [pred.get('prob_up_4w', 0.5), pred.get('prob_alpha_4w', 0.5)]
         confidence = np.mean([abs(p - 0.5) * 2 for p in probs])
         pred['confidence'] = round(float(confidence), 4)
 
-        # Top contributing features (XGBoost feature importance weighted by value)
-        if 'xgb_5d_classifier' in models:
-            model = models['xgb_5d_classifier']
-            importances = model.feature_importances_
+        # Top contributing features from alpha model (primary)
+        feat_model = models.get('xgb_4w_alpha_classifier') or models.get('xgb_4w_classifier')
+        if feat_model is not None and hasattr(feat_model, 'feature_importances_'):
+            importances = feat_model.feature_importances_
             values = xi[0]
             contributions = importances * np.abs(values)
             top_idx = np.argsort(contributions)[::-1][:5]

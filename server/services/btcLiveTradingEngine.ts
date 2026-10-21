@@ -208,7 +208,7 @@ export async function getOpenTrade(portfolioId: number): Promise<any | null> {
   return result.rows.length > 0 ? result.rows[0] : null
 }
 
-export async function openMarketBuy(
+async function openMarketBuy(
   portfolioId: number,
   btcAmount: number,
   currentPrice: number,
@@ -279,7 +279,7 @@ export async function openMarketBuy(
   }
 }
 
-export async function closeTradeMarket(tradeId: number, reason: string): Promise<{ success: boolean; error?: string }> {
+async function closeTradeMarket(tradeId: number, reason: string): Promise<{ success: boolean; error?: string }> {
   const tradeResult = await getDb().execute(sql`
     SELECT id, portfolio_id, direction, entry_price, btc_amount, position_size, entry_fee
     FROM btc_live_trades WHERE id = ${tradeId} AND status = 'open'

@@ -1,9 +1,11 @@
 /**
  * Google Gemini API client for LLM completions
- * Uses Gemini 2.0 Flash
+ * Model from GEMINI_MODEL (see ecosystem.config.cjs)
  * Paid tier: 2000 RPM, 4M TPM
  * Free tier: 15 RPM, 1M TPM
  */
+
+import { groundSystemPrompt } from './llmGrounding'
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
 
@@ -121,9 +123,7 @@ export async function generateGeminiCompletion(
         },
         body: JSON.stringify({
           contents,
-          ...(systemPrompt && {
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-          }),
+          systemInstruction: { parts: [{ text: groundSystemPrompt(systemPrompt) }] },
           generationConfig: {
             maxOutputTokens: maxTokens,
             temperature,

@@ -7,6 +7,7 @@
     "new_keyword_count",
     "is_3x_spike",
     "is_2x_spike",
+    "is_1_5x_spike",
     "is_source_spike",
     "baseline_avg",
     "baseline_stddev",
@@ -37,19 +38,27 @@
     "vol_relative",
     "momentum_vs_spy",
     "ticker_event_count_30d",
+    "sector_AI",
+    "sector_China ADR",
+    "sector_Commodities",
     "sector_Consumer",
     "sector_Defense",
     "sector_Energy",
     "sector_Europe ADR",
     "sector_Finance",
-    "sector_Technology"
+    "sector_Healthcare",
+    "sector_Index",
+    "sector_Industrial",
+    "sector_Materials",
+    "sector_Semiconductors",
+    "sector_Technology",
+    "sector_Telecom",
+    "sector_Utilities"
   ],
   "target_columns": [
-    "target_5d_up",
-    "target_5d_change",
     "target_4w_up",
     "target_4w_change",
-    "target_5d_alpha"
+    "target_4w_alpha"
   ],
   "id_columns": [
     "correlation_id",
@@ -58,5 +67,5 @@
     "event_date",
     "event_type"
   ],
-  "total_features": 43
+  "total_features": 54
 }

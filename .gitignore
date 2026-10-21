@@ -28,7 +28,7 @@ logs
 .claude/settings.local.json
 
 # Downloaded article images (re-fetchable via pipeline)
-public/images/articles/
+storage/
 
 # ML artifacts (models, data, venv)
 ml/.venv/

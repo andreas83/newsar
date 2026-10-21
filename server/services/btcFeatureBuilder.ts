@@ -12,6 +12,7 @@
 
 import { getDatabase } from '../database/db'
 import { sql } from 'drizzle-orm'
+import { entitySentimentAvg } from '../utils/entitySentiment'
 
 let db: ReturnType<typeof getDatabase> | null = null
 function getDb() {
@@ -313,19 +314,8 @@ async function computeTechnicalFeatures(dateStr: string): Promise<Partial<Featur
   }
 }
 
-/**
- * article_entities.sentiment is a varchar that holds either a label
- * ('positive' | 'negative' | 'neutral', written by the classifier up to
- * 2026-04-19) or a numeric FinBERT score (written by ml/btc_sentiment.py since).
- * Rows with neither (NULL) stay out of the average instead of being counted as
- * neutral, so the feature is null when nothing was scored rather than a fake 0.
- */
-const ENTITY_SENTIMENT_AVG = sql`AVG(CASE
-        WHEN ae.sentiment ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN ae.sentiment::float
-        WHEN ae.sentiment = 'positive' THEN 1
-        WHEN ae.sentiment = 'negative' THEN -1
-        WHEN ae.sentiment = 'neutral' THEN 0
-        ELSE NULL END)::float`
+// Both storage formats, shared with the rest of the app.
+const ENTITY_SENTIMENT_AVG = sql`${entitySentimentAvg('ae')}::float`
 
 /**
  * Compute macro news sentiment features for a given date.

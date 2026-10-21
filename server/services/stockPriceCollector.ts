@@ -11,7 +11,7 @@ import { getQuote, type FinnhubQuote } from '../utils/finnhubClient.js'
 /**
  * Check if US stock market is currently open (Mon-Fri 9:30-16:00 ET).
  */
-export function isUSMarketOpen(): boolean {
+function isUSMarketOpen(): boolean {
   const now = new Date()
   const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }))
   const day = et.getDay()

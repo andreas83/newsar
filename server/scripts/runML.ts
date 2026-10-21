@@ -3,22 +3,27 @@
  * streams stdout/stderr, and returns exit code.
  *
  * Usage: tsx server/scripts/runML.ts <script_name> [args...]
- *   script_name: features | train | evaluate | predict
+ *   script_name: features | train | evaluate | predict | sentiment
+ *                btc-features | btc-train | btc-predict | btc-sentiment
  */
 
 import { spawn } from 'child_process'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import dotenv from 'dotenv'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..', '..')
+
+// Explicitly load .env so DATABASE_URL is available even in cron
+dotenv.config({ path: path.join(projectRoot, '.env') })
 const mlDir = path.join(projectRoot, 'ml')
 const venvPython = path.join(mlDir, '.venv', 'bin', 'python')
 
 const scriptName = process.argv[2]
 if (!scriptName) {
   console.error('Usage: tsx server/scripts/runML.ts <script> [args...]')
-  console.error('  Scripts: features, train, evaluate, predict')
+  console.error('  Scripts: features, train, evaluate, predict, sentiment, btc-features, btc-train, btc-predict, btc-sentiment')
   process.exit(1)
 }
 
@@ -27,6 +32,11 @@ const scriptMap: Record<string, string> = {
   train: 'train.py',
   evaluate: 'evaluate.py',
   predict: 'predict.py',
+  sentiment: 'sentiment.py',
+  'btc-features': 'btc_features.py',
+  'btc-train': 'btc_train.py',
+  'btc-predict': 'btc_predict.py',
+  'btc-sentiment': 'btc_sentiment.py',
 }
 
 const pyFile = scriptMap[scriptName]

@@ -23,9 +23,12 @@ const { data: signalData } = await useFetch(
   { lazy: true }
 )
 
-const activeSignal = computed(() =>
-  signalData.value?.signals?.find((s: any) => s.status === 'active') ?? null
-)
+const activeSignal = computed(() => {
+  const actives = signalData.value?.signals?.filter((s: any) => s.status === 'active') ?? []
+  if (!actives.length) return null
+  // Pick strongest signal to match index page ordering
+  return actives.reduce((best: any, s: any) => s.signalStrength > best.signalStrength ? s : best, actives[0])
+})
 const pastSignals = computed(() =>
   signalData.value?.signals?.filter((s: any) => s.status !== 'active') ?? []
 )

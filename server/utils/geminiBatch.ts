@@ -11,6 +11,7 @@
  */
 
 import { GoogleGenAI, type BatchJob, type InlinedRequest } from '@google/genai'
+import { groundSystemPrompt } from './llmGrounding'
 
 let client: GoogleGenAI | null = null
 
@@ -54,9 +55,7 @@ export function buildRequest(config: PromptConfig): InlinedRequest {
     config: {},
   }
 
-  if (config.systemPrompt) {
-    request.config!.systemInstruction = config.systemPrompt
-  }
+  request.config!.systemInstruction = groundSystemPrompt(config.systemPrompt)
 
   if (config.options?.temperature !== undefined) {
     request.config!.temperature = config.options.temperature

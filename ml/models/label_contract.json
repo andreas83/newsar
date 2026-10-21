@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-10-21T00:15:06.591083",
+  "criterion": "brier_skill > 0 on the live track record of the deciding score",
+  "horizon_days": 28,
+  "sources": {
+    "heuristic": {
+      "tradeable": false,
+      "reason": "brier_skill -0.0099 <= 0",
+      "score": "signal_strength",
+      "label_expr": "actual_change_4w - benchmark > 0",
+      "brier_skill": -0.009903307083044544,
+      "auc": 0.49913856163856163,
+      "auc_ci_low": 0.4452388024203105,
+      "auc_ci_high": 0.5480002033724471,
+      "n": 645,
+      "n_eff": 179
+    },
+    "ml_model": {
+      "tradeable": false,
+      "reason": "brier_skill -0.1342 <= 0",
+      "score": "short_term_confidence",
+      "label_expr": "actual_change_4w - benchmark > 0",
+      "brier_skill": -0.13421660936593272,
+      "auc": 0.4322830625056318,
+      "auc_ci_low": 0.3493223117139236,
+      "auc_ci_high": 0.5189814726526616,
+      "n": 366,
+      "n_eff": 111
+    }
+  },
+  "version": "a333d8f871714dc7"
+}

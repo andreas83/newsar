@@ -1,3 +1,6 @@
+// Load .env file so process.env has all values when PM2 reads this config
+require('dotenv').config()
+
 module.exports = {
   apps: [
     {
@@ -9,6 +12,8 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3050,
+        // CARTO basemaps key (domain-restricted, exposed to the browser for map tiles)
+        NUXT_PUBLIC_CARTO_API_KEY: process.env.NUXT_PUBLIC_CARTO_API_KEY || '',
         ADMIN_USERNAME: process.env.ADMIN_USERNAME || 'admin',
         ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
         DATABASE_URL: process.env.DATABASE_URL || 'postgresql://newsar:password@localhost:5432/newsar',
@@ -42,6 +47,15 @@ module.exports = {
         ALPHAVANTAGE_API_KEY: process.env.ALPHAVANTAGE_API_KEY || '',
         ALPACA_API_KEY: process.env.ALPACA_API_KEY || '',
         ALPACA_API_SECRET: process.env.ALPACA_API_SECRET || '',
+        // Binance live BTC trading
+        BINANCE_API_KEY: process.env.BINANCE_API_KEY || '',
+        BINANCE_API_SECRET: process.env.BINANCE_API_SECRET || '',
+        BINANCE_LIVE_TRADING: process.env.BINANCE_LIVE_TRADING || 'false',
+        BTC_LIVE_MAX_POSITION_USD: process.env.BTC_LIVE_MAX_POSITION_USD || '1000',
+        BTC_LIVE_DAILY_LOSS_LIMIT_USD: process.env.BTC_LIVE_DAILY_LOSS_LIMIT_USD || '500',
+        BTC_LIVE_RISK_PER_TRADE: process.env.BTC_LIVE_RISK_PER_TRADE || '0.10',
+        BTC_LIVE_STOP_LOSS_PCT: process.env.BTC_LIVE_STOP_LOSS_PCT || '0.05',
+        BTC_LIVE_TAKE_PROFIT_PCT: process.env.BTC_LIVE_TAKE_PROFIT_PCT || '0.15',
       },
       error_file: '/var/log/pm2/newsar-error.log',
       out_file: '/var/log/pm2/newsar-out.log',

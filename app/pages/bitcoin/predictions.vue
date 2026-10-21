@@ -76,6 +76,11 @@ function getTimelinePoints(entries: any[], modelName: string): string {
     </div>
     <BitcoinSubNav />
 
+    <ArchivedBanner title="BTC model retired" retired-on="23 August 2026"
+      reference="See BTC_MODEL_ASSESSMENT.md for the full analysis.">
+      These predictions are no longer generated. Over 92 validated forecasts the model scored AUC 0.476 (95% CI 0.34–0.61) — indistinguishable from chance — and at one prediction per day on a 14-day horizon it would take roughly 20 years to accumulate enough independent observations to prove otherwise. The history below is kept as the record.
+    </ArchivedBanner>
+
     <!-- Tab Nav -->
     <div class="flex items-center gap-1 mb-6 border-b border-rule">
       <button
