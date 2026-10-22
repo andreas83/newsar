@@ -73,6 +73,10 @@ export const articles = pgTable('articles', {
   extractionStatusIdx: index('articles_extraction_status_idx').on(table.extractionStatus),
   storyPublishedIdx: index('articles_story_published_idx').on(table.storyId, table.publishedAt.desc()),
   excludedExtractedPublishedIdx: index('articles_excluded_extracted_published_idx').on(table.excluded, table.contentExtracted, table.publishedAt.desc()),
+  // Trigram indexes for ILIKE '%term%' search (migration 0023, needs pg_trgm)
+  titleTrgmIdx: index('articles_title_trgm_idx').using('gin', table.title.op('gin_trgm_ops')),
+  contentTrgmIdx: index('articles_content_trgm_idx').using('gin', table.content.op('gin_trgm_ops')),
+  fullContentTrgmIdx: index('articles_full_content_trgm_idx').using('gin', table.fullContent.op('gin_trgm_ops')),
 }))
 
 // Classifications table - Article classifications
