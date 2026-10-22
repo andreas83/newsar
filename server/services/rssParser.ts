@@ -109,7 +109,12 @@ export async function parseFeed(feedId: number) {
 
         const content = cleanContent(item)
         const contentHash = generateContentHash(content)
-        const publishedAt = item.pubDate ? new Date(item.pubDate) : new Date()
+        // Some feeds publish future or unparseable dates; either would pin the
+        // article to the top of every "latest" query.
+        const parsedDate = item.pubDate ? new Date(item.pubDate) : null
+        const publishedAt = parsedDate && !isNaN(parsedDate.getTime()) && parsedDate.getTime() <= Date.now() + 3_600_000
+          ? parsedDate
+          : new Date()
         const author = item.creator || item.author || null
 
         // Check if article already exists (by URL)

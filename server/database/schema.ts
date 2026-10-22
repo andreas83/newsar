@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, varchar, integer, real, jsonb, index, unique, uniqueIndex, customType, boolean, bigint } from 'drizzle-orm/pg-core'
+import { pgTable, serial, text, timestamp, varchar, integer, real, jsonb, index, unique, uniqueIndex, customType, boolean, bigint, smallint } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
 // Custom vector type for pgvector
@@ -246,8 +246,14 @@ export const entitySummaries = pgTable('entity_summaries', {
   mentionCount: integer('mention_count').default(0).notNull(), // Total mentions across articles
   trendingScore: real('trending_score').default(0), // Trending score (0-1)
   metadata: jsonb('metadata'), // Additional data (aliases, categories, etc.)
-  generatedAt: timestamp('generated_at').defaultNow(),
-  lastUpdated: timestamp('last_updated').defaultNow().notNull(),
+  // The article window this version was built from: windowStart → generatedAt
+  windowStart: timestamp('window_start'),
+  developments: jsonb('developments'), // [{date, text, articleIds[], theme}]
+  themes: jsonb('themes'), // ["Iran ceasefire talks", ...]
+  articleContext: jsonb('article_context'), // { articleIds, articleTitles, dateRange }
+  windowStats: jsonb('window_stats'), // { articles, outlets, stories, roles, avgSentiment }
+  generatedAt: timestamp('generated_at').defaultNow(), // when this version was written
+  lastUpdated: timestamp('last_updated').defaultNow().notNull(), // last check, even if skipped
 }, (table) => ({
   entityIdIdx: index('entity_summaries_entity_id_idx').on(table.entityId),
   trendingIdx: index('entity_summaries_trending_idx').on(table.trendingScore.desc()),
@@ -436,6 +442,13 @@ export const entitySummaryHistory = pgTable('entity_summary_history', {
   mentionCount: integer('mention_count'),
   trendingScore: real('trending_score'),
   articleContext: jsonb('article_context'), // { articleIds, articleTitles, dateRange }
+  windowStart: timestamp('window_start'),
+  developments: jsonb('developments'),
+  themes: jsonb('themes'),
+  windowStats: jsonb('window_stats'),
+  // 1 = legacy: changeNote/articleContext describe the NEXT version. 2 = self-contained.
+  formatVersion: smallint('format_version').default(1).notNull(),
+  supersededAt: timestamp('superseded_at'), // set when a backfill rebuilt this period
   generatedAt: timestamp('generated_at').notNull(), // when this version was originally created
   archivedAt: timestamp('archived_at').defaultNow().notNull(),
 }, (table) => ({

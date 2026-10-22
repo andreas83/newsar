@@ -39,6 +39,7 @@
     "topics:cluster": "tsx server/scripts/testClustering.ts",
     "entities:summarize": "tsx server/scripts/generateEntitySummaries.ts",
     "entities:schedule": "tsx server/scripts/scheduleEntitySummaries.ts",
+    "entities:rebuild-history": "tsx server/scripts/rebuildEntityHistory.ts",
     "relationships:compute": "tsx server/scripts/computeEntityRelationships.ts",
     "seed:multilingual": "tsx server/scripts/seedMultilingualFeeds.ts",
     "features:all": "tsx server/scripts/batchFeatures.ts",

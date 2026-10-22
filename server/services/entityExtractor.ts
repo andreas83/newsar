@@ -1,6 +1,15 @@
 import { generateChatCompletion } from '../utils/ollama.js'
 import { classifySubtype, normalizeSubtype } from '../utils/entitySubtypes.js'
 
+const ROLES = ['protagonist', 'antagonist', 'neutral', 'context'] as const
+
+/** LLMs return 'PROTAGONIST' or invent roles ('president, US'); readers expect these four. */
+export function normalizeRole(role: unknown): typeof ROLES[number] {
+  const r = typeof role === 'string' ? role.trim().toLowerCase() : ''
+  return (ROLES as readonly string[]).includes(r) ? (r as typeof ROLES[number]) : 'neutral'
+}
+
+
 export interface Entity {
   name: string
   type: 'person' | 'organization' | 'location' | 'event' | 'topic'
@@ -131,7 +140,7 @@ export function parseEntityResponse(responseText: string): EntityExtractionResul
         subtype,
         relevance: Math.max(0, Math.min(1, e.relevance || 0.5)),
         mentions: Math.max(1, e.mentions || 1),
-        role: e.role || 'neutral',
+        role: normalizeRole(e.role),
       }
     })
     .slice(0, 12)
