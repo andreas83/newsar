@@ -29,111 +29,125 @@ export default defineEventHandler(async (event) => {
 
     // Search articles with relevance scoring
     if (searchType === 'all' || searchType === 'articles') {
-      const articleResults = await db
-        .select({
-          id: articles.id,
-          title: articles.title,
-          content: articles.content,
-          fullContent: articles.fullContent,
-          url: articles.url,
-          author: articles.author,
-          publishedAt: articles.publishedAt,
-          feedName: feeds.name,
-          bias: classifications.politicalBias,
-          language: classifications.language,
-          // Relevance score: title matches rank higher
-          relevance: sql<number>`
-            CASE
-              WHEN LOWER(${articles.title}) LIKE LOWER(${'%' + searchQuery + '%'}) THEN 3
-              WHEN LOWER(${articles.content}) LIKE LOWER(${'%' + searchQuery + '%'}) THEN 2
-              WHEN LOWER(${articles.fullContent}) LIKE LOWER(${'%' + searchQuery + '%'}) THEN 1
-              ELSE 0
-            END
-          `.as('relevance')
-        })
-        .from(articles)
-        .leftJoin(classifications, eq(articles.id, classifications.articleId))
-        .leftJoin(feeds, eq(articles.feedId, feeds.id))
-        .where(
-          or(
-            ilike(articles.title, `%${searchQuery}%`),
-            ilike(articles.content, `%${searchQuery}%`),
-            ilike(articles.fullContent, `%${searchQuery}%`)
+      // Text matches ranked title (3) > summary (2) > full text (1), newest first within a tier.
+      // Fetching tier by tier and stopping once `limit` is reached gives the same order as a
+      // single CASE-ranked query, but common terms never have to scan every article's full text.
+      const pattern = `%${searchQuery}%`
+      const tiers = [
+        { relevance: 3, where: ilike(articles.title, pattern) },
+        { relevance: 2, where: and(ilike(articles.content, pattern), sql`NOT COALESCE(${articles.title} ILIKE ${pattern}, false)`) },
+        {
+          relevance: 1,
+          where: and(
+            ilike(articles.fullContent, pattern),
+            sql`NOT COALESCE(${articles.title} ILIKE ${pattern}, false)`,
+            sql`NOT COALESCE(${articles.content} ILIKE ${pattern}, false)`
+          ),
+        },
+      ]
+      const searchArticleText = async () => {
+        const found: any[] = []
+        for (const tier of tiers) {
+          if (found.length >= limit) break
+          const rows = await db
+            .select({
+              id: articles.id,
+              title: articles.title,
+              content: articles.content,
+              fullContent: articles.fullContent,
+              url: articles.url,
+              author: articles.author,
+              publishedAt: articles.publishedAt,
+              feedName: feeds.name,
+              bias: classifications.politicalBias,
+              language: classifications.language,
+              relevance: sql<number>`${tier.relevance}::int`.as('relevance'),
+            })
+            .from(articles)
+            .leftJoin(classifications, eq(articles.id, classifications.articleId))
+            .leftJoin(feeds, eq(articles.feedId, feeds.id))
+            .where(tier.where)
+            .orderBy(desc(articles.publishedAt))
+            .limit(limit - found.length)
+          found.push(...rows)
+        }
+        return found
+      }
+
+      const [articleResults, keywordArticles, entityArticles] = await Promise.all([
+        searchArticleText(),
+
+        // Also search for articles with matching keywords
+        db
+          .select({
+            id: articles.id,
+            title: articles.title,
+            content: articles.content,
+            fullContent: articles.fullContent,
+            url: articles.url,
+            author: articles.author,
+            publishedAt: articles.publishedAt,
+            feedName: feeds.name,
+            bias: classifications.politicalBias,
+            language: classifications.language,
+            relevance: sql<number>`4`.as('relevance') // Keyword matches rank highest
+          })
+          .from(articles)
+          .innerJoin(keywordsTable, eq(articles.id, keywordsTable.articleId))
+          .leftJoin(classifications, eq(articles.id, classifications.articleId))
+          .leftJoin(feeds, eq(articles.feedId, feeds.id))
+          .where(ilike(keywordsTable.keyword, `%${searchQuery}%`))
+          .groupBy(
+            articles.id,
+            articles.title,
+            articles.content,
+            articles.fullContent,
+            articles.url,
+            articles.author,
+            articles.publishedAt,
+            feeds.name,
+            classifications.politicalBias,
+            classifications.language
           )
-        )
-        .orderBy(desc(sql`relevance`), desc(articles.publishedAt))
-        .limit(limit)
+          .orderBy(desc(articles.publishedAt))
+          .limit(limit),
 
-      // Also search for articles with matching keywords
-      const keywordArticles = await db
-        .select({
-          id: articles.id,
-          title: articles.title,
-          content: articles.content,
-          fullContent: articles.fullContent,
-          url: articles.url,
-          author: articles.author,
-          publishedAt: articles.publishedAt,
-          feedName: feeds.name,
-          bias: classifications.politicalBias,
-          language: classifications.language,
-          relevance: sql<number>`4`.as('relevance') // Keyword matches rank highest
-        })
-        .from(articles)
-        .innerJoin(keywordsTable, eq(articles.id, keywordsTable.articleId))
-        .leftJoin(classifications, eq(articles.id, classifications.articleId))
-        .leftJoin(feeds, eq(articles.feedId, feeds.id))
-        .where(ilike(keywordsTable.keyword, `%${searchQuery}%`))
-        .groupBy(
-          articles.id,
-          articles.title,
-          articles.content,
-          articles.fullContent,
-          articles.url,
-          articles.author,
-          articles.publishedAt,
-          feeds.name,
-          classifications.politicalBias,
-          classifications.language
-        )
-        .orderBy(desc(articles.publishedAt))
-        .limit(limit)
-
-      // Also search for articles with matching entities
-      const entityArticles = await db
-        .select({
-          id: articles.id,
-          title: articles.title,
-          content: articles.content,
-          fullContent: articles.fullContent,
-          url: articles.url,
-          author: articles.author,
-          publishedAt: articles.publishedAt,
-          feedName: feeds.name,
-          bias: classifications.politicalBias,
-          language: classifications.language,
-          relevance: sql<number>`4`.as('relevance') // Entity matches rank highest
-        })
-        .from(articles)
-        .innerJoin(articleEntities, eq(articles.id, articleEntities.articleId))
-        .innerJoin(entities, eq(articleEntities.entityId, entities.id))
-        .leftJoin(classifications, eq(articles.id, classifications.articleId))
-        .leftJoin(feeds, eq(articles.feedId, feeds.id))
-        .where(ilike(entities.name, `%${searchQuery}%`))
-        .groupBy(
-          articles.id,
-          articles.title,
-          articles.content,
-          articles.fullContent,
-          articles.url,
-          articles.author,
-          articles.publishedAt,
-          feeds.name,
-          classifications.politicalBias,
-          classifications.language
-        )
-        .orderBy(desc(articles.publishedAt))
-        .limit(limit)
+        // Also search for articles with matching entities
+        db
+          .select({
+            id: articles.id,
+            title: articles.title,
+            content: articles.content,
+            fullContent: articles.fullContent,
+            url: articles.url,
+            author: articles.author,
+            publishedAt: articles.publishedAt,
+            feedName: feeds.name,
+            bias: classifications.politicalBias,
+            language: classifications.language,
+            relevance: sql<number>`4`.as('relevance') // Entity matches rank highest
+          })
+          .from(articles)
+          .innerJoin(articleEntities, eq(articles.id, articleEntities.articleId))
+          .innerJoin(entities, eq(articleEntities.entityId, entities.id))
+          .leftJoin(classifications, eq(articles.id, classifications.articleId))
+          .leftJoin(feeds, eq(articles.feedId, feeds.id))
+          .where(ilike(entities.name, `%${searchQuery}%`))
+          .groupBy(
+            articles.id,
+            articles.title,
+            articles.content,
+            articles.fullContent,
+            articles.url,
+            articles.author,
+            articles.publishedAt,
+            feeds.name,
+            classifications.politicalBias,
+            classifications.language
+          )
+          .orderBy(desc(articles.publishedAt))
+          .limit(limit),
+      ])
 
       // Combine and deduplicate results, prioritizing by relevance
       const allArticles = [...keywordArticles, ...entityArticles, ...articleResults]

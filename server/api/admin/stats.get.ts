@@ -1,55 +1,65 @@
 import { getDatabase } from '~/server/database/db'
-import { articles, feeds, classifications, articleEmbeddings, analyses, keywords, entities, entityRelationships, entitySummaries, stories } from '~/server/database/schema'
-import { eq, sql } from 'drizzle-orm'
+import { articles, feeds, classifications, articleEmbeddings, analyses, keywords, entities, entityRelationships, entitySummaries } from '~/server/database/schema'
+import { sql } from 'drizzle-orm'
 
 export default defineEventHandler(async (event) => {
   const db = getDatabase()
 
   try {
-    // Get total articles
-    const allArticles = await db.select().from(articles)
-    const totalArticles = allArticles.length
+    // Count in SQL; loading whole tables into memory just to count them pushed the
+    // process past the 4 GB heap limit and crashed the app.
+    const count = async (query: ReturnType<typeof sql>) =>
+      Number(((await db.execute(query)).rows[0] as any)?.count || 0)
 
-    // Get extracted articles
-    const extractedArticles = allArticles.filter((a) => a.contentExtracted).length
+    const [
+      totalArticles,
+      extractedArticles,
+      pendingClassification,
+      classifiedArticles,
+      embeddingsGenerated,
+      analyzedArticles,
+      totalFeeds,
+      activeFeeds,
+      totalKeywords,
+      uniqueKeywords,
+      totalEntities,
+      entitiesByType,
+      entityRelationshipsCount,
+      totalEntitySummaries,
+      entitiesWithSummaries,
+      storyStats,
+    ] = await Promise.all([
+      count(sql`SELECT COUNT(*) AS count FROM ${articles}`),
+      count(sql`SELECT COUNT(*) AS count FROM ${articles} WHERE ${articles.contentExtracted} = true`),
+      count(sql`SELECT COUNT(*) AS count FROM ${articles} WHERE ${articles.processingStatus} = 'pending'`),
+      count(sql`SELECT COUNT(*) AS count FROM ${classifications}`),
+      count(sql`SELECT COUNT(*) AS count FROM ${articleEmbeddings}`),
+      count(sql`SELECT COUNT(*) AS count FROM ${analyses}`),
+      count(sql`SELECT COUNT(*) AS count FROM ${feeds}`),
+      count(sql`SELECT COUNT(*) AS count FROM ${feeds} WHERE ${feeds.isActive} = 1`),
+      count(sql`SELECT COUNT(*) AS count FROM ${keywords}`),
+      count(sql`SELECT COUNT(DISTINCT keyword) AS count FROM keywords`),
+      count(sql`SELECT COUNT(*) AS count FROM ${entities}`),
+      db.execute(sql`
+        SELECT
+          LOWER(type) as type,
+          COUNT(*) as count
+        FROM entities
+        WHERE LOWER(type) IN ('person', 'organization', 'location', 'event', 'topic')
+        GROUP BY LOWER(type)
+      `),
+      count(sql`SELECT COUNT(*) AS count FROM ${entityRelationships}`),
+      count(sql`SELECT COUNT(*) AS count FROM ${entitySummaries}`),
+      count(sql`SELECT COUNT(*) AS count FROM ${entitySummaries} WHERE ${entitySummaries.summary} IS NOT NULL`),
+      db.execute(sql`
+        SELECT
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE status = 'trending') AS trending,
+          COUNT(*) FILTER (WHERE status = 'emerging') AS emerging
+        FROM stories
+      `),
+    ])
 
-    // Get classified articles
-    const allClassifications = await db.select().from(classifications)
-    const classifiedArticles = allClassifications.length
-    const pendingClassification = allArticles.filter(
-      (a) => a.processingStatus === 'pending'
-    ).length
-
-    // Get embeddings
-    const allEmbeddings = await db.select().from(articleEmbeddings)
-    const embeddingsGenerated = allEmbeddings.length
-
-    // Get analyses
-    const allAnalyses = await db.select().from(analyses)
-    const analyzedArticles = allAnalyses.length
-
-    // Get feeds
-    const allFeeds = await db.select().from(feeds)
-    const totalFeeds = allFeeds.length
-    const activeFeeds = allFeeds.filter((f) => f.isActive === 1).length
-
-    // Get keywords
-    const allKeywords = await db.select().from(keywords)
-    const totalKeywords = allKeywords.length
-    const uniqueKeywordsResult = await db.execute(sql`SELECT COUNT(DISTINCT keyword) as count FROM keywords`)
-    const uniqueKeywords = Number((uniqueKeywordsResult.rows[0] as any).count || 0)
-
-    // Get entities
-    const allEntities = await db.select().from(entities)
-    const totalEntities = allEntities.length
-    const entitiesByType = await db.execute(sql`
-      SELECT
-        LOWER(type) as type,
-        COUNT(*) as count
-      FROM entities
-      WHERE LOWER(type) IN ('person', 'organization', 'location', 'event', 'topic')
-      GROUP BY LOWER(type)
-    `)
     const entityCounts: Record<string, number> = {
       person: 0,
       organization: 0,
@@ -65,21 +75,11 @@ export default defineEventHandler(async (event) => {
       }
     }
 
-    // Get entity relationships count
-    const entityRelationshipsResult = await db.select({ count: sql<number>`count(*)` }).from(entityRelationships)
-    const entityRelationshipsCount = Number(entityRelationshipsResult[0]?.count || 0)
-
-    // Get entity summaries
-    const allEntitySummaries = await db.select().from(entitySummaries)
-    const totalEntitySummaries = allEntitySummaries.length
-    const entitiesWithSummaries = allEntitySummaries.filter(s => s.summary !== null).length
     const entitiesNeedingSummaries = totalEntities - entitiesWithSummaries
-
-    // Get stories
-    const allStories = await db.select().from(stories)
-    const totalStories = allStories.length
-    const trendingStories = allStories.filter(s => s.status === 'trending').length
-    const emergingStories = allStories.filter(s => s.status === 'emerging').length
+    const storyRow = storyStats.rows[0] as any
+    const totalStories = Number(storyRow?.total || 0)
+    const trendingStories = Number(storyRow?.trending || 0)
+    const emergingStories = Number(storyRow?.emerging || 0)
 
     return {
       totalArticles,
