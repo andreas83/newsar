@@ -42,7 +42,7 @@ function formatEventType(t: string) {
 }
 
 function formatDate(d: string | Date) {
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  return new Date(d).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 function formatChange(v: number | null | undefined) {

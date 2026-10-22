@@ -23,15 +23,18 @@ const { data: signalData } = await useFetch(
   { lazy: true }
 )
 
-const activeSignal = computed(() =>
-  signalData.value?.signals?.find((s: any) => s.status === 'active') ?? null
-)
+const activeSignal = computed(() => {
+  const actives = signalData.value?.signals?.filter((s: any) => s.status === 'active') ?? []
+  if (!actives.length) return null
+  // Pick strongest signal to match index page ordering
+  return actives.reduce((best: any, s: any) => s.signalStrength > best.signalStrength ? s : best, actives[0])
+})
 const pastSignals = computed(() =>
   signalData.value?.signals?.filter((s: any) => s.status !== 'active') ?? []
 )
 
 function formatSignalDate(d: string | Date) {
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return new Date(d).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
 }
 
 function formatEventShort(t: string) {
@@ -109,7 +112,7 @@ function formatRelativeTime(date: string | Date) {
   if (diffMins < 60) return `${diffMins}m ago`
   if (diffHours < 24) return `${diffHours}h ago`
   if (diffDays < 7) return `${diffDays}d ago`
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
 }
 
 function sentimentColor(s: number | null) {

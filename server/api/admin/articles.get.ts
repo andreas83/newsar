@@ -1,6 +1,6 @@
 import { getDatabase } from '~/server/database/db'
 import { articles } from '~/server/database/schema'
-import { desc } from 'drizzle-orm'
+import { desc, sql } from 'drizzle-orm'
 
 export default defineEventHandler(async (event) => {
   const db = getDatabase()
@@ -12,8 +12,7 @@ export default defineEventHandler(async (event) => {
 
   try {
     // Get total count
-    const allArticles = await db.select().from(articles)
-    const total = allArticles.length
+    const [{ count: total }] = await db.select({ count: sql<number>`count(*)::int` }).from(articles)
 
     // Get paginated articles
     const paginatedArticles = await db

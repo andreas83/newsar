@@ -29,7 +29,7 @@ function formatDate(date: string | Date | null) {
   if (hours < 1) return 'Just now'
   if (hours < 24) return `${hours}h ago`
   if (hours < 48) return 'Yesterday'
-  return d.toLocaleDateString()
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC' })
 }
 
 const activeSources = computed(() => sources.value?.filter(s => s.isActive === 1) || [])

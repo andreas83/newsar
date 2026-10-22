@@ -25,6 +25,13 @@ export default defineNuxtConfig({
     },
   },
 
+  // Public values are overridden at runtime by NUXT_PUBLIC_* env vars
+  runtimeConfig: {
+    public: {
+      cartoApiKey: '',
+    },
+  },
+
   // TypeScript configuration
   typescript: {
     strict: false,

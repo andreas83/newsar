@@ -96,8 +96,3 @@ export async function searchSymbol(query: string): Promise<FinnhubSymbolMatch[]>
   return data.result || []
 }
 
-export async function getMarketStatus(): Promise<{ exchange: string; holiday: string | null; isOpen: boolean; session: string; t: number; timezone: string }> {
-  const url = `${BASE_URL}/stock/market-status?exchange=US&token=${getApiKey()}`
-  const response = await rateLimitedFetch(url)
-  return response.json()
-}

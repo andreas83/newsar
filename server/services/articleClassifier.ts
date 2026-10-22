@@ -3,7 +3,7 @@ import { articles, feeds, classifications, entities as entitiesTable, articleEnt
 import { eq, inArray } from 'drizzle-orm'
 import { detectLanguage, iso3ToIso1 } from './languageDetector.js'
 import { classifyBias, getBiasLabel, type BiasResult } from './biasClassifier.js'
-import { extractEntities, extractGeoPOV, normalizeEntityName, type Entity } from './entityExtractor.js'
+import { extractEntities, extractGeoPOV, normalizeEntityName, normalizeRole, type Entity } from './entityExtractor.js'
 import { extractArticleFeatures, storeArticleFeatures } from './articleFeatureExtractor.js'
 
 /**
@@ -157,7 +157,7 @@ export async function storeArticleEntities(articleId: number, extractedEntities:
         entityId,
         relevanceScore: entity.relevance,
         mentionCount: entity.mentions,
-        role: entity.role || 'neutral',
+        role: normalizeRole(entity.role),
       })
     }
   }

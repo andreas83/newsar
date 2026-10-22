@@ -11,6 +11,7 @@
 import { getDatabase } from '../database/db'
 import { stockBacktestResults, stockSignalProfiles, stockNewsCorrelations, stockPrices } from '../database/schema'
 import { sql, eq, and, gte } from 'drizzle-orm'
+import { getForwardPrice, getPriceOnDate } from '../utils/priceSeries'
 
 const SPY_WATCHLIST_ID = 48
 
@@ -29,59 +30,6 @@ const HORIZONS = [
   { label: '2w', days: 10 },
   { label: '4w', days: 20 },
 ] as const
-
-/**
- * Get the closing price N trading days after a given date for a watchlist item.
- * Uses daily bars ordered by date, offset by N to skip weekends/holidays naturally.
- */
-async function getForwardPrice(
-  watchlistId: number,
-  eventDate: Date,
-  tradingDaysForward: number
-): Promise<number | null> {
-  const dateStr = eventDate.toISOString().split('T')[0]
-
-  // Get the Nth trading day's closing price after the event date.
-  // We select one daily price per date (preferring alpaca, then latest),
-  // ordered by date ASC, and offset to skip to the Nth trading day.
-  const result = await getDb().execute(sql`
-    WITH daily_closes AS (
-      SELECT DISTINCT ON (DATE(fetched_at))
-        price,
-        DATE(fetched_at) as trade_date
-      FROM stock_prices
-      WHERE watchlist_id = ${watchlistId}
-        AND DATE(fetched_at) > ${dateStr}::date
-      ORDER BY DATE(fetched_at) ASC, source ASC, fetched_at DESC
-    )
-    SELECT price, trade_date
-    FROM daily_closes
-    ORDER BY trade_date ASC
-    OFFSET ${tradingDaysForward - 1}
-    LIMIT 1
-  `)
-
-  if (result.rows.length === 0) return null
-  return parseFloat((result.rows[0] as any).price)
-}
-
-/**
- * Get the event-day closing price (baseline for % change calculations).
- */
-async function getEventDayPrice(watchlistId: number, eventDate: Date): Promise<number | null> {
-  const dateStr = eventDate.toISOString().split('T')[0]
-
-  const result = await getDb().execute(sql`
-    SELECT price FROM stock_prices
-    WHERE watchlist_id = ${watchlistId}
-      AND DATE(fetched_at) = ${dateStr}::date
-    ORDER BY source ASC, fetched_at DESC
-    LIMIT 1
-  `)
-
-  if (result.rows.length === 0) return null
-  return parseFloat((result.rows[0] as any).price)
-}
 
 /**
  * Backtest all correlation events: compute forward prices and % changes.
@@ -106,7 +54,7 @@ export async function backtestAllEvents(): Promise<{ processed: number; skipped:
 
     try {
       // Get event-day price as baseline
-      const basePrice = parseFloat(row.price_after) || await getEventDayPrice(watchlistId, eventDate)
+      const basePrice = parseFloat(row.price_after) || await getPriceOnDate(watchlistId, eventDate)
 
       if (!basePrice) {
         skipped++
@@ -131,7 +79,7 @@ export async function backtestAllEvents(): Promise<{ processed: number; skipped:
       ])
 
       // SPY baseline
-      const spyBase = await getEventDayPrice(SPY_WATCHLIST_ID, eventDate)
+      const spyBase = await getPriceOnDate(SPY_WATCHLIST_ID, eventDate)
 
       const pctChange = (future: number | null, base: number) =>
         future != null ? +((future - base) / base * 100).toFixed(4) : null

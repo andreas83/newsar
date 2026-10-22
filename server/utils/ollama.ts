@@ -1,5 +1,6 @@
 import { Ollama } from 'ollama'
 import { isGeminiAvailable, generateGeminiCompletion, generateGeminiJSON } from './gemini'
+import { groundSystemPrompt } from './llmGrounding'
 import { isOpenRouterAvailable, generateOpenRouterCompletion, generateOpenRouterJSON } from './openrouter'
 
 let primaryClient: Ollama | null = null
@@ -241,12 +242,10 @@ export async function generateChatCompletion(
 
       const messages = []
 
-      if (systemPrompt) {
-        messages.push({
-          role: 'system',
-          content: systemPrompt,
-        })
-      }
+      messages.push({
+        role: 'system',
+        content: groundSystemPrompt(systemPrompt),
+      })
 
       messages.push({
         role: 'user',

@@ -33,8 +33,8 @@ export default defineEventHandler(async (event) => {
   const featureColumns = readJsonFile(path.join(modelsDir, 'feature_columns.json'))
 
   if (action === 'status') {
-    const modelFiles = ['xgb_5d_classifier.joblib', 'xgb_5d_regressor.joblib',
-                        'xgb_4w_classifier.joblib', 'logreg_baseline.joblib']
+    const modelFiles = ['xgb_4w_classifier.joblib', 'xgb_4w_alpha_classifier.joblib',
+                        'lgbm_4w_classifier.joblib', 'logreg_baseline.joblib']
 
     const availableModels = modelFiles.filter(f =>
       existsSync(path.join(modelsDir, f))

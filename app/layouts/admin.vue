@@ -14,6 +14,7 @@ const links = [
   { label: 'Entities', icon: 'i-heroicons-user-group', to: '/admin/entities' },
   { label: 'Network', icon: 'i-heroicons-squares-plus', to: '/admin/network' },
   { label: 'Stocks', icon: 'i-heroicons-chart-bar', to: '/admin/stocks' },
+  { label: 'ML Models', icon: 'i-heroicons-beaker', to: '/admin/ml-models' },
   { label: 'Jobs', icon: 'i-heroicons-queue-list', to: '/admin/jobs' },
   { label: 'RunPod', icon: 'i-heroicons-cloud', to: '/admin/runpod' },
 ]

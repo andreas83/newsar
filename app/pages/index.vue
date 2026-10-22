@@ -25,7 +25,7 @@ function formatTime(date: string | Date | null) {
   if (hours < 1) return 'Just now'
   if (hours < 24) return `${hours}h ago`
   if (hours < 48) return 'Yesterday'
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
 }
 
 function getBiasLabel(bias: number | null) {
@@ -48,6 +48,7 @@ function getBiasColor(bias: number | null) {
 
 const now = new Date()
 const dateStr = now.toLocaleDateString('en-US', {
+  timeZone: 'UTC',
   weekday: 'long',
   month: 'long',
   day: 'numeric',

@@ -10,7 +10,8 @@ async function main() {
   const result = await validateRecommendations()
 
   console.log(`\nSummary:`)
-  console.log(`  Validated: ${result.validated}`)
+  console.log(`  Validated (4w window closed): ${result.validated}`)
+  console.log(`  Partial (5d only, will retry):  ${result.partial}`)
   console.log(`  No price data: ${result.noData}`)
 
   await closeDatabase()

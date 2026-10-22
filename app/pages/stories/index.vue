@@ -10,29 +10,34 @@ const keywordFilter = ref('')
 const viewMode = ref<'list' | 'regions' | 'persons' | 'organizations' | 'keywords'>('list')
 const showFilters = ref(false)
 
-const { data: stories, refresh } = await useFetch('/api/stories', {
-  query: { sortBy, language: selectedLanguage, dateRange, region, entity: entityFilter, keyword: keywordFilter, limit: 50 },
-})
-
-const { data: trendingStories } = await useFetch('/api/stories', {
-  query: { sortBy: 'trending', limit: 5 },
-})
-
-const { data: regionData } = await useFetch('/api/stories', {
-  query: { view: 'regions' },
-})
-
-const { data: personsData } = await useFetch('/api/stories', {
-  query: { view: 'persons' },
-})
-
-const { data: orgsData } = await useFetch('/api/stories', {
-  query: { view: 'organizations' },
-})
-
-const { data: keywordsData } = await useFetch('/api/stories', {
-  query: { view: 'keywords' },
-})
+// Independent requests: fetch in parallel so SSR waits for the slowest one, not the sum
+const [
+  { data: stories, refresh },
+  { data: trendingStories },
+  { data: regionData },
+  { data: personsData },
+  { data: orgsData },
+  { data: keywordsData },
+] = await Promise.all([
+  useFetch('/api/stories', {
+    query: { sortBy, language: selectedLanguage, dateRange, region, entity: entityFilter, keyword: keywordFilter, limit: 50 },
+  }),
+  useFetch('/api/stories', {
+    query: { sortBy: 'trending', limit: 5 },
+  }),
+  useFetch('/api/stories', {
+    query: { view: 'regions' },
+  }),
+  useFetch('/api/stories', {
+    query: { view: 'persons' },
+  }),
+  useFetch('/api/stories', {
+    query: { view: 'organizations' },
+  }),
+  useFetch('/api/stories', {
+    query: { view: 'keywords' },
+  }),
+])
 
 const sortOptions = [
   { label: 'Trending', value: 'trending' },
@@ -149,7 +154,7 @@ function formatDate(date: string | Date | null) {
   if (hours < 1) return 'Just now'
   if (hours < 24) return `${hours}h ago`
   if (hours < 48) return 'Yesterday'
-  return d.toLocaleDateString()
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC' })
 }
 
 function getStatusColor(status: string) {

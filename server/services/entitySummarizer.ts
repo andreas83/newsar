@@ -1,284 +1,407 @@
-import { generateChatCompletion } from '../utils/ollama.js'
+import { generateJSON } from '../utils/ollama.js'
 import { getDatabase } from '../database/db.js'
-import { entities, articleEntities, articles, entitySummaries, entitySummaryHistory } from '../database/schema.js'
+import { entities, articleEntities, entitySummaries, entitySummaryHistory } from '../database/schema.js'
 import { eq, desc, sql } from 'drizzle-orm'
 
-export interface EntitySummary {
+/**
+ * Entity summaries as a versioned, article-grounded timeline.
+ *
+ * Each version is built from the articles published since the previous one
+ * (its "window"). One LLM call returns the profile plus dated developments that
+ * cite article ids, and theme labels that are reused across versions so
+ * storylines can be compared week to week. A version owns its window, its
+ * developments and its sources; when replaced it moves to history unchanged.
+ *
+ * The old pipeline used the 10 most recent articles (often a few hours of a
+ * week), ignored whether the entity was the subject or a passing mention, and
+ * produced change notes by diffing two summaries, which reported paraphrase as
+ * news and filed every note under the previous version's date.
+ */
+
+/** Articles sent to the model per version; one per story cluster. */
+const MAX_ARTICLES = 24
+/** Below this many new relevant articles a scheduled run keeps the current version. */
+const MIN_NEW_ARTICLES = 3
+/** Window for an entity's first version. */
+const FIRST_WINDOW_DAYS = 14
+/** Cap for entities not refreshed in a long time. */
+const MAX_WINDOW_DAYS = 30
+const LEAD_CHARS = 500
+const DAY_MS = 86_400_000
+
+/** Phrases the model uses when it has nothing concrete to say. */
+/** Category names, not storylines; they fill every week of the theme strip and say nothing. */
+const GENERIC_THEMES = /^(us |u\.s\. |international |domestic |foreign )?(foreign policy|domestic (policy|politics)|presidential actions?|international relations|politics|policy|diplomacy|economy|economic (policy|concerns)|legal (challenges|issues)|government|news|other)$/i
+
+const META_PHRASES = /newsworthiness|highlights (the|his|her|their)|the (new|updated|previous) (summary|profile|version)|is (frequently|often) mentioned|summary updated/i
+
+export interface Development {
+  date: string
+  text: string
+  articleIds: number[]
+  theme: string | null
+}
+
+export interface WindowStats {
+  /** All articles linking the entity in the window, any role. */
+  articles: number
+  outlets: number
+  stories: number
+  roles: Record<string, number>
+  /** Articles actually sent to the model. */
+  selected: number
+}
+
+export interface ArticleContext {
+  articleIds: number[]
+  articleTitles: string[]
+  dateRange: { from: string | null; to: string | null }
+}
+
+export interface EntityVersion {
   summary: string
   shortDescription: string
-  success: boolean
-  error?: string
+  developments: Development[]
+  themes: string[]
+  noMajorChange: boolean
+  articleContext: ArticleContext
+  windowStats: WindowStats
+}
+
+export type VersionOutcome =
+  | ({ status: 'built' } & EntityVersion)
+  | { status: 'skipped'; reason: string; windowStats: WindowStats }
+
+interface EntityRef { id: number; name: string; type: string; subtype?: string | null }
+
+interface PreviousVersion {
+  summary: string | null
+  shortDescription: string | null
+  themes: string[]
+  generatedAt: Date | null
+}
+
+interface WindowArticle {
+  id: number
+  title: string
+  lead: string
+  publishedAt: Date
+  outlet: string | null
+  role: string
+  score: number
+  storyId: number | null
+}
+
+const day = (d: Date) => d.toISOString().slice(0, 10)
+
+/**
+ * Every article linking the entity in (since, until]. Future-dated articles are
+ * excluded by the upper bound, so a bad feed date cannot pin one to the top.
+ */
+async function loadWindowArticles(entityId: number, since: Date, until: Date): Promise<WindowArticle[]> {
+  const db = getDatabase()
+  const result = await db.execute(sql`
+    SELECT
+      a.id, a.title, a.published_at,
+      left(regexp_replace(coalesce(nullif(a.full_content, ''), a.content, ''), '\s+', ' ', 'g'), ${LEAD_CHARS}) AS lead,
+      f.name AS outlet,
+      lower(coalesce(ae.role, 'neutral')) AS role,
+      coalesce(ae.relevance_score, 0.5) * greatest(coalesce(ae.mention_count, 1), 1) AS score,
+      (SELECT sm.story_id FROM story_members sm WHERE sm.article_id = a.id
+        ORDER BY sm.similarity DESC NULLS LAST LIMIT 1) AS story_id
+    FROM article_entities ae
+    JOIN articles a ON a.id = ae.article_id
+    LEFT JOIN feeds f ON f.id = a.feed_id
+    WHERE ae.entity_id = ${entityId}
+      AND a.published_at > ${since.toISOString()}::timestamp
+      AND a.published_at <= ${until.toISOString()}::timestamp
+  `)
+  return (result.rows as any[]).map(r => ({
+    id: Number(r.id),
+    title: r.title,
+    lead: r.lead ?? '',
+    publishedAt: new Date(r.published_at),
+    outlet: r.outlet,
+    role: r.role,
+    score: Number(r.score) || 0,
+    storyId: r.story_id != null ? Number(r.story_id) : null,
+  }))
 }
 
 /**
- * Generate AI summary for an entity based on recent articles
+ * The articles worth showing the model: the entity is the subject (not a
+ * passing "context" mention), one per story cluster, highest relevance first.
  */
-export async function generateEntitySummary(
-  entityId: number,
-  entityType: string,
-  entityName: string
-): Promise<EntitySummary> {
-  const db = getDatabase()
-
-  try {
-    // Get recent articles mentioning this entity (last 30 days, max 10 articles)
-    const thirtyDaysAgo = new Date()
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-
-    const recentArticles = await db
-      .select({
-        title: articles.title,
-        content: articles.content,
-        fullContent: articles.fullContent,
-        publishedAt: articles.publishedAt,
-      })
-      .from(articleEntities)
-      .innerJoin(articles, eq(articleEntities.articleId, articles.id))
-      .where(eq(articleEntities.entityId, entityId))
-      .orderBy(desc(articles.publishedAt))
-      .limit(10)
-
-    if (recentArticles.length === 0) {
-      return {
-        summary: '',
-        shortDescription: '',
-        success: false,
-        error: 'No articles found for entity'
-      }
+function selectArticles(all: WindowArticle[], allowContext: boolean): WindowArticle[] {
+  const pool = all.filter(a => a.role !== 'context')
+  const candidates = pool.length || !allowContext ? pool : all
+  const bestPerStory = new Map<string, WindowArticle>()
+  for (const a of candidates) {
+    const key = a.storyId != null ? `s${a.storyId}` : `a${a.id}`
+    const current = bestPerStory.get(key)
+    if (!current || a.score > current.score || (a.score === current.score && a.publishedAt > current.publishedAt)) {
+      bestPerStory.set(key, a)
     }
+  }
+  return [...bestPerStory.values()]
+    .sort((a, b) => b.score - a.score || b.publishedAt.getTime() - a.publishedAt.getTime())
+    .slice(0, MAX_ARTICLES)
+    .sort((a, b) => a.publishedAt.getTime() - b.publishedAt.getTime())
+}
 
-    // Build context from articles (use fullContent if available, fallback to content)
-    const context = recentArticles
-      .map((a, idx) => {
-        const content = a.fullContent || a.content || ''
-        return `Article ${idx + 1}:
-Title: ${a.title}
-Snippet: ${content.substring(0, 400)}...`
-      })
-      .join('\n\n')
+function windowStats(all: WindowArticle[], selected: WindowArticle[]): WindowStats {
+  const roles: Record<string, number> = {}
+  for (const a of all) roles[a.role] = (roles[a.role] ?? 0) + 1
+  return {
+    articles: all.length,
+    outlets: new Set(all.map(a => a.outlet).filter(Boolean)).size,
+    stories: new Set(all.map(a => (a.storyId != null ? `s${a.storyId}` : `a${a.id}`))).size,
+    roles,
+    selected: selected.length,
+  }
+}
 
-    const typeDescriptions = {
-      person: 'this person',
-      organization: 'this organization',
-      location: 'this location or place',
-      event: 'this event',
-      topic: 'this topic or concept'
-    }
+const TYPE_LABELS: Record<string, string> = {
+  person: 'person',
+  organization: 'organization',
+  location: 'place',
+  event: 'event',
+  topic: 'topic or concept',
+}
 
-    const prompt = `Based on these recent news articles, write a comprehensive summary about "${entityName}" (${typeDescriptions[entityType as keyof typeof typeDescriptions] || 'this entity'}).
+function buildPrompt(entity: EntityRef, since: Date, until: Date, selected: WindowArticle[], total: number, previous: PreviousVersion | null): string {
+  const kind = TYPE_LABELS[entity.type] ?? 'entity'
+  const sub = entity.subtype ? `, ${entity.subtype}` : ''
+  const prev = previous?.summary
+    ? `PREVIOUS PROFILE (written ${previous.generatedAt ? day(previous.generatedAt) : 'earlier'}):
+Short: ${previous.shortDescription ?? ''}
+${previous.summary}`
+    : 'There is no previous profile.'
+  const themes = previous?.themes?.length
+    ? `\nTHEME LABELS USED BEFORE (reuse one when a storyline continues, so themes stay comparable over time): ${previous.themes.join('; ')}\n`
+    : ''
+  const articleBlock = selected.map(a =>
+    `[${a.id}] ${day(a.publishedAt)} · ${a.outlet ?? 'unknown outlet'} · ${entity.name} is ${a.role}
+${a.title}
+${a.lead}`).join('\n\n')
 
-Recent Articles:
-${context}
+  return `You maintain a running profile of ${entity.name} (${kind}${sub}) for a news site.
+Write it as of ${day(until)}. The articles below were published between ${day(since)} and ${day(until)}.
 
-Write:
-1. A one-line description (max 100 characters) - just the essential facts
-2. A detailed summary (150-200 words) covering:
-   - Who/what they are (background/context)
-   - Why they're newsworthy right now
-   - Recent events or developments
-   - Current relevance or significance
-   - Use neutral, factual tone
+${prev}
+${themes}
+ARTICLES (the ${selected.length} most relevant of ${total} that mention ${entity.name}; each line: [id] date · outlet · role of ${entity.name}):
 
-Respond with ONLY a JSON object in this exact format:
+${articleBlock}
+
+Return only a JSON object:
 {
-  "shortDescription": "one line description here",
-  "summary": "detailed summary paragraph here"
+  "shortDescription": "at most 100 characters: who ${entity.name} is (title or role exactly as the articles state it) and their main story right now",
+  "summary": "120-180 words. First sentence: who ${entity.name} is. Then what is happening with them now, most important first. Neutral and factual.",
+  "developments": [{"date": "YYYY-MM-DD", "text": "one concrete event, at most 25 words", "articleIds": [123], "theme": "exactly one of the labels in themes"}],
+  "themes": ["2 to 5 specific storylines, 2-5 words each, e.g. \"Iran ceasefire talks\", \"EU tariff dispute\", \"Midterm campaign\". Never generic categories like \"Foreign policy\", \"Domestic politics\", \"Presidential actions\" or \"International relations\""],
+  "noMajorChange": false
 }
 
-Only return the JSON, nothing else.`
+Rules for developments (0 to 5 items, most important first):
+- Only events in which ${entity.name} acts, speaks, decides, or is directly affected. Skip articles where they are only mentioned in passing.
+- Only things that happened in this window and are not already covered by the previous profile.
+- Every item cites at least one article id from the list above. The date is when it happened, usually the article date.
+- State the event itself ("Met Iran's foreign minister in Doha"). Never comment on the coverage or the profile ("highlights", "newsworthiness", "the summary").
+If nothing material happened, return an empty developments list and "noMajorChange": true.
+Use titles such as "President" or "former" only when the articles support them.`
+}
 
-    const response = await generateChatCompletion(prompt, undefined, {
-      temperature: 0.3, // Low temperature for factual summaries
-      maxTokens: 1000, // Increased to avoid truncation
-      format: 'json'
-    })
+/** Keep only well-formed developments that cite articles the model was shown. */
+function cleanDevelopments(raw: any, selected: WindowArticle[], themes: string[]): Development[] {
+  if (!Array.isArray(raw)) return []
+  const byId = new Map(selected.map(a => [a.id, a]))
+  const themeSet = new Map(themes.map(t => [t.toLowerCase(), t]))
+  const out: Development[] = []
+  for (const d of raw) {
+    const text = typeof d?.text === 'string' ? d.text.trim() : ''
+    if (!text || META_PHRASES.test(text)) continue
+    const ids = (Array.isArray(d.articleIds) ? d.articleIds : [])
+      .map((x: any) => Number(x))
+      .filter((x: number) => byId.has(x))
+    if (!ids.length) continue
+    const cited = ids.map((x: number) => byId.get(x)!.publishedAt).sort((a: Date, b: Date) => a.getTime() - b.getTime())
+    const date = typeof d.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : day(cited[0])
+    const theme = typeof d.theme === 'string' ? (themeSet.get(d.theme.trim().toLowerCase()) ?? d.theme.trim()) : null
+    out.push({ date, text: text.slice(0, 300), articleIds: [...new Set<number>(ids)], theme: theme || null })
+    if (out.length === 5) break
+  }
+  return out
+}
 
-    try {
-      // Strip markdown code blocks if present (```json ... ```)
-      let cleanedResponse = response.trim()
-      if (cleanedResponse.startsWith('```')) {
-        cleanedResponse = cleanedResponse
-          .replace(/^```(?:json)?\s*/i, '')
-          .replace(/\s*```\s*$/, '')
-      }
+export function cleanThemes(raw: any): string[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const t of raw) {
+    if (typeof t !== 'string') continue
+    const label = t.trim().replace(/\s+/g, ' ').slice(0, 40)
+    if (!label || GENERIC_THEMES.test(label) || seen.has(label.toLowerCase())) continue
+    seen.add(label.toLowerCase())
+    out.push(label)
+    if (out.length === 6) break
+  }
+  return out
+}
 
-      const result = JSON.parse(cleanedResponse)
+/**
+ * Build one version of an entity's profile from the articles in (since, until].
+ * Pure with respect to storage: callers decide whether and where to write it.
+ */
+export async function buildEntityVersion(
+  entity: EntityRef,
+  window: { since: Date; until: Date },
+  previous: PreviousVersion | null,
+  options: { minArticles?: number } = {},
+): Promise<VersionOutcome> {
+  const all = await loadWindowArticles(entity.id, window.since, window.until)
+  const isFirst = !previous?.summary
+  const selected = selectArticles(all, isFirst)
+  const stats = windowStats(all, selected)
+  const minArticles = options.minArticles ?? (isFirst ? 1 : MIN_NEW_ARTICLES)
 
-      if (!result.shortDescription || !result.summary) {
-        throw new Error('Missing required fields in response')
-      }
-
-      return {
-        summary: result.summary,
-        shortDescription: result.shortDescription,
-        success: true
-      }
-    } catch (parseError) {
-      console.error('Failed to parse entity summary JSON:', response.substring(0, 200))
-      return {
-        summary: '',
-        shortDescription: '',
-        success: false,
-        error: 'Failed to parse summary response'
-      }
-    }
-  } catch (error) {
-    console.error(`Error generating summary for entity ${entityId}:`, error)
+  if (selected.length < minArticles) {
     return {
-      summary: '',
-      shortDescription: '',
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      status: 'skipped',
+      reason: `${selected.length} relevant article(s) in window (need ${minArticles})`,
+      windowStats: stats,
     }
   }
-}
 
-/**
- * Generate a change note comparing old and new summaries
- */
-async function generateChangeNote(entityName: string, oldSummary: string, newSummary: string): Promise<string> {
-  try {
-    const prompt = `Here are two versions of a summary about "${entityName}". What new facts or events appear in the newer version that weren't in the older one?
+  const prompt = buildPrompt(entity, window.since, window.until, selected, all.length, previous)
+  const raw = await generateJSON<any>(prompt, undefined, { temperature: 0.2, maxTokens: 1800 })
 
-OLDER VERSION:
-${oldSummary}
+  const shortDescription = typeof raw?.shortDescription === 'string' ? raw.shortDescription.trim().slice(0, 300) : ''
+  const summary = typeof raw?.summary === 'string' ? raw.summary.trim() : ''
+  if (!shortDescription || !summary) throw new Error('Model response is missing shortDescription or summary')
 
-NEWER VERSION:
-${newSummary}
-
-Write 1-2 sentences stating ONLY the new facts, events, or developments — like a news ticker. Do NOT reference "the summary" or "the new version". Just state what happened.
-Example good output: "Appointed as interim CEO in March. Faced corruption charges in federal court."
-Example bad output: "The new summary adds information about their appointment as CEO."`
-
-    const response = await generateChatCompletion(prompt, undefined, {
-      temperature: 0.3,
-      maxTokens: 200,
-    })
-
-    return response.trim()
-  } catch (error) {
-    console.error(`Failed to generate change note for ${entityName}:`, error)
-    return 'Summary updated with new information.'
-  }
-}
-
-/**
- * Get a snapshot of recent articles driving the current entity summary
- */
-async function getArticleContextSnapshot(entityId: number): Promise<{ articleIds: number[]; articleTitles: string[]; dateRange: { from: string | null; to: string | null } }> {
-  const db = getDatabase()
-
-  const recentArticles = await db
-    .select({
-      id: articles.id,
-      title: articles.title,
-      publishedAt: articles.publishedAt,
-    })
-    .from(articleEntities)
-    .innerJoin(articles, eq(articleEntities.articleId, articles.id))
-    .where(eq(articleEntities.entityId, entityId))
-    .orderBy(desc(articles.publishedAt))
-    .limit(10)
+  const listed = cleanThemes(raw.themes)
+  const developments = cleanDevelopments(raw.developments, selected, listed)
+  // A development's theme must be in the version's themes, or the theme strip
+  // shows storylines with no events behind them (and events with no row).
+  const themes = cleanThemes([...listed, ...developments.map(d => d.theme)]).slice(0, 6)
+  const inThemes = new Set(themes.map(t => t.toLowerCase()))
+  for (const d of developments) if (d.theme && !inThemes.has(d.theme.toLowerCase())) d.theme = null
+  const dates = selected.map(a => a.publishedAt.toISOString())
 
   return {
-    articleIds: recentArticles.map(a => a.id),
-    articleTitles: recentArticles.map(a => a.title),
-    dateRange: {
-      from: recentArticles.length > 0 ? (recentArticles[recentArticles.length - 1].publishedAt?.toISOString() ?? null) : null,
-      to: recentArticles.length > 0 ? (recentArticles[0].publishedAt?.toISOString() ?? null) : null,
-    }
+    status: 'built',
+    summary,
+    shortDescription,
+    themes,
+    developments,
+    noMajorChange: raw.noMajorChange === true && developments.length === 0,
+    articleContext: {
+      articleIds: selected.map(a => a.id),
+      articleTitles: selected.map(a => a.title),
+      dateRange: { from: dates[0] ?? null, to: dates[dates.length - 1] ?? null },
+    },
+    windowStats: stats,
   }
 }
 
+/** Plain-text note for the legacy change_note column, so old readers keep working. */
+function developmentsAsNote(devs: Development[] | null | undefined): string | null {
+  return devs?.length ? devs.map(d => d.text).join(' ') : null
+}
+
+export type UpdateStatus = 'updated' | 'skipped' | 'no_change'
+
 /**
- * Update or create entity summary in database
+ * Refresh an entity's profile from the articles published since its current
+ * version. Archives the current version (unchanged) when a new one is written;
+ * when there is too little new coverage, only records that it was checked.
  */
-export async function updateEntitySummary(entityId: number): Promise<void> {
+export async function updateEntitySummary(entityId: number): Promise<UpdateStatus> {
   const db = getDatabase()
 
-  // Get entity details
-  const [entity] = await db
-    .select()
-    .from(entities)
-    .where(eq(entities.id, entityId))
-    .limit(1)
+  const [entity] = await db.select().from(entities).where(eq(entities.id, entityId)).limit(1)
+  if (!entity) throw new Error(`Entity ${entityId} not found`)
 
-  if (!entity) {
-    throw new Error(`Entity ${entityId} not found`)
-  }
+  const [existing] = await db.select().from(entitySummaries).where(eq(entitySummaries.entityId, entityId)).limit(1)
 
-  console.log(`Generating summary for ${entity.type}: ${entity.name}`)
+  const now = new Date()
+  const floor = new Date(now.getTime() - MAX_WINDOW_DAYS * DAY_MS)
+  const since = existing?.generatedAt
+    ? new Date(Math.max(existing.generatedAt.getTime(), floor.getTime()))
+    : new Date(now.getTime() - FIRST_WINDOW_DAYS * DAY_MS)
 
-  // Generate summary
-  const summaryResult = await generateEntitySummary(
-    entityId,
-    entity.type,
-    entity.name
+  console.log(`Generating summary for ${entity.type}: ${entity.name} (window ${day(since)} → ${day(now)})`)
+
+  const outcome = await buildEntityVersion(
+    { id: entity.id, name: entity.name, type: entity.type, subtype: (entity as any).subtype },
+    { since, until: now },
+    existing ? {
+      summary: existing.summary,
+      shortDescription: existing.shortDescription,
+      themes: (existing.themes as string[] | null) ?? [],
+      generatedAt: existing.generatedAt,
+    } : null,
   )
 
-  if (!summaryResult.success) {
-    throw new Error(summaryResult.error || 'Summary generation failed')
+  const touch = () => db.update(entitySummaries).set({ lastUpdated: now }).where(eq(entitySummaries.entityId, entityId))
+
+  if (outcome.status === 'skipped') {
+    if (!existing) throw new Error(`No summary written for ${entity.name}: ${outcome.reason}`)
+    await touch()
+    console.log(`  Skipped ${entity.name}: ${outcome.reason}`)
+    return 'skipped'
+  }
+  if (existing && outcome.noMajorChange) {
+    await touch()
+    console.log(`  No major change for ${entity.name}; kept current version`)
+    return 'no_change'
   }
 
-  // Count total mentions
-  const mentionCountResult = await db
+  const [{ count: mentionCount }] = await db
     .select({ count: sql<number>`COUNT(*)::int` })
     .from(articleEntities)
     .where(eq(articleEntities.entityId, entityId))
 
-  const mentionCount = mentionCountResult[0]?.count || 0
+  await db.transaction(async (tx) => {
+    if (existing?.summary) {
+      const isStructured = existing.developments != null
+      await tx.insert(entitySummaryHistory).values({
+        entityId,
+        summary: existing.summary,
+        shortDescription: existing.shortDescription,
+        changeNote: developmentsAsNote(existing.developments as Development[] | null),
+        mentionCount: existing.mentionCount,
+        trendingScore: existing.trendingScore,
+        articleContext: existing.articleContext,
+        windowStart: existing.windowStart,
+        developments: existing.developments,
+        themes: existing.themes,
+        windowStats: existing.windowStats,
+        formatVersion: isStructured ? 2 : 1,
+        generatedAt: existing.generatedAt || existing.lastUpdated,
+      })
+    }
 
-  // Archive old summary if it exists and text differs
-  const [existingSummary] = await db
-    .select()
-    .from(entitySummaries)
-    .where(eq(entitySummaries.entityId, entityId))
-    .limit(1)
+    const version = {
+      summary: outcome.summary,
+      shortDescription: outcome.shortDescription,
+      mentionCount: mentionCount || 0,
+      windowStart: since,
+      developments: outcome.developments,
+      themes: outcome.themes,
+      articleContext: outcome.articleContext,
+      windowStats: outcome.windowStats,
+      generatedAt: now,
+      lastUpdated: now,
+    }
+    await tx.insert(entitySummaries)
+      .values({ entityId, ...version })
+      .onConflictDoUpdate({ target: entitySummaries.entityId, set: version })
+  })
 
-  if (existingSummary?.summary && existingSummary.summary !== summaryResult.summary) {
-    // Generate change note and article context in parallel
-    const [changeNote, articleContext] = await Promise.all([
-      generateChangeNote(entity.name, existingSummary.summary, summaryResult.summary),
-      getArticleContextSnapshot(entityId),
-    ])
-
-    await db.insert(entitySummaryHistory).values({
-      entityId,
-      summary: existingSummary.summary,
-      shortDescription: existingSummary.shortDescription,
-      changeNote,
-      mentionCount: existingSummary.mentionCount,
-      trendingScore: existingSummary.trendingScore,
-      articleContext,
-      generatedAt: existingSummary.generatedAt || existingSummary.lastUpdated,
-    })
-
-    console.log(`  Archived previous summary for ${entity.name}`)
-  }
-
-  // Upsert summary
-  await db
-    .insert(entitySummaries)
-    .values({
-      entityId,
-      summary: summaryResult.summary,
-      shortDescription: summaryResult.shortDescription,
-      mentionCount,
-      lastUpdated: new Date(),
-      generatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: entitySummaries.entityId,
-      set: {
-        summary: summaryResult.summary,
-        shortDescription: summaryResult.shortDescription,
-        mentionCount,
-        lastUpdated: new Date(),
-        generatedAt: new Date(),
-      }
-    })
-
-  console.log(`✅ Summary generated for ${entity.name}`)
+  console.log(`✅ Summary generated for ${entity.name} (${outcome.developments.length} developments, ${outcome.windowStats.selected}/${outcome.windowStats.articles} articles)`)
+  return 'updated'
 }
 
 /**
@@ -347,6 +470,7 @@ export async function batchGenerateSummaries(limit: number = 10, force: boolean 
 
   let processed = 0
   let failed = 0
+  const statuses: Record<UpdateStatus, number> = { updated: 0, skipped: 0, no_change: 0 }
 
   // Process in batches of `concurrency`
   for (let i = 0; i < entityIds.length; i += concurrency) {
@@ -358,6 +482,7 @@ export async function batchGenerateSummaries(limit: number = 10, force: boolean 
     for (const result of results) {
       if (result.status === 'fulfilled') {
         processed++
+        statuses[result.value]++
       } else {
         console.error(`Failed to generate summary:`, result.reason)
         failed++
@@ -376,7 +501,7 @@ export async function batchGenerateSummaries(limit: number = 10, force: boolean 
   }
 
   const duration = Math.round((Date.now() - startTime) / 1000)
-  console.log(`✅ Batch summary generation complete: ${processed} succeeded, ${failed} failed in ${duration}s`)
+  console.log(`✅ Batch summary generation complete: ${processed} succeeded (${statuses.updated} new versions, ${statuses.no_change} unchanged, ${statuses.skipped} too little new coverage), ${failed} failed in ${duration}s`)
 
   return {
     processed,

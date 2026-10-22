@@ -14,6 +14,7 @@
 
 import { getDatabase } from '../../database/db'
 import { sql } from 'drizzle-orm'
+import { entitySentimentAvg } from '~/server/utils/entitySentiment'
 
 export default defineEventHandler(async (event) => {
   const query = getQuery(event)
@@ -57,7 +58,7 @@ export default defineEventHandler(async (event) => {
         es.image_url,
         es.trending_score,
         COUNT(DISTINCT ae2.article_id) as co_occurrence_count,
-        ROUND(AVG(CASE WHEN ae2.sentiment = 'positive' THEN 1 WHEN ae2.sentiment = 'negative' THEN -1 ELSE 0 END)::numeric, 2) as avg_sentiment
+        ROUND(${entitySentimentAvg('ae2')}::numeric, 2) as avg_sentiment
       FROM article_entities ae1
       INNER JOIN article_entities ae2 ON ae1.article_id = ae2.article_id
       INNER JOIN entities e ON ae2.entity_id = e.id

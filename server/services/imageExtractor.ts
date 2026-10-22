@@ -1,10 +1,17 @@
 import puppeteer from 'puppeteer'
+import sharp from 'sharp'
 import { getDatabase } from '../database/db.js'
 import { articles } from '../database/schema.js'
 import { eq } from 'drizzle-orm'
 import { writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { createHash } from 'crypto'
+
+// All raster images are stored as WebP to keep storage/images/articles small.
+// The directory lives outside public/ so nuxt build doesn't copy it into .output;
+// nginx serves /images/ directly from storage/images/ (see nginx site config).
+const WEBP_MAX_WIDTH = 1200
+const WEBP_QUALITY = 80
 
 interface ImageExtractionResult {
   success: boolean
@@ -89,15 +96,53 @@ async function downloadImage(imageUrl: string, articleId: number): Promise<strin
     }
 
     const arrayBuffer = await response.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
+    let buffer = Buffer.from(arrayBuffer)
 
     // Generate filename from URL hash
     const hash = createHash('md5').update(imageUrl).digest('hex')
-    const extension = imageUrl.split('.').pop()?.split('?')[0] || 'jpg'
+
+    // Determine extension from Content-Type header first, then URL fallback
+    const contentType = response.headers.get('content-type') || ''
+    const mimeExtensions: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/gif': 'gif',
+      'image/webp': 'webp',
+      'image/svg+xml': 'svg',
+      'image/avif': 'avif',
+    }
+    let extension = mimeExtensions[contentType.split(';')[0].trim().toLowerCase()] || ''
+
+    if (!extension) {
+      // Fallback: extract from URL path (before query string), only accept short alphanumeric extensions
+      try {
+        const urlPath = new URL(imageUrl).pathname
+        const lastSegment = urlPath.split('/').pop() || ''
+        const match = lastSegment.match(/\.([a-zA-Z0-9]{2,4})$/)
+        extension = match ? match[1].toLowerCase() : 'jpg'
+      } catch {
+        extension = 'jpg'
+      }
+    }
+
+    // Convert raster images to resized WebP; SVG is kept as-is
+    if (extension !== 'svg') {
+      try {
+        buffer = await sharp(buffer, { animated: extension === 'gif' })
+          .resize({ width: WEBP_MAX_WIDTH, withoutEnlargement: true })
+          .webp({ quality: WEBP_QUALITY })
+          .toBuffer()
+        extension = 'webp'
+      } catch (error: any) {
+        // Keep the original bytes if conversion fails (corrupt/unsupported format)
+        console.warn(`WebP conversion failed for ${imageUrl}, saving original:`, error.message)
+      }
+    }
+
     const filename = `${articleId}-${hash}.${extension}`
 
     // Ensure images directory exists
-    const imagesDir = join(process.cwd(), 'public', 'images', 'articles')
+    const imagesDir = join(process.cwd(), 'storage', 'images', 'articles')
     await mkdir(imagesDir, { recursive: true })
 
     // Save the file

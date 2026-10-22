@@ -7,7 +7,7 @@
 
 import { getDatabase } from '~/server/database/db'
 import { entities, entityRelationships } from '~/server/database/schema'
-import { sql, or, and, eq } from 'drizzle-orm'
+import { inArray } from 'drizzle-orm'
 
 interface PathNode {
   entityId: number
@@ -21,6 +21,67 @@ interface PathEdge {
   target: number
   weight: number
   cooccurrenceCount: number
+}
+
+type Graph = Map<number, Array<{ entityId: number; weight: number; cooccurrenceCount: number }>>
+
+// The full relationship graph (~380k edges) is built once and shared by all requests
+// for 10 minutes; rebuilding it per request cost ~2s and ~150 MB of heap each time.
+const GRAPH_TTL_MS = 10 * 60 * 1000
+let graphCache: { graph: Graph; builtAt: number } | null = null
+let graphLoading: Promise<Graph> | null = null
+
+async function getGraph(db: ReturnType<typeof getDatabase>): Promise<Graph> {
+  if (graphCache && Date.now() - graphCache.builtAt < GRAPH_TTL_MS) return graphCache.graph
+  if (!graphLoading) {
+    graphLoading = buildGraph(db)
+      .then((graph) => {
+        graphCache = { graph, builtAt: Date.now() }
+        return graph
+      })
+      .finally(() => { graphLoading = null })
+  }
+  return graphLoading
+}
+
+async function buildGraph(db: ReturnType<typeof getDatabase>): Promise<Graph> {
+  // Fetch all relationships to build graph
+  const relationships = await db
+    .select({
+      sourceEntityId: entityRelationships.sourceEntityId,
+      targetEntityId: entityRelationships.targetEntityId,
+      strength: entityRelationships.strength,
+      cooccurrenceCount: entityRelationships.cooccurrenceCount,
+    })
+    .from(entityRelationships)
+
+  // Build adjacency list (undirected graph)
+  const adjacencyList: Graph = new Map()
+
+  for (const rel of relationships) {
+    const { sourceEntityId, targetEntityId, strength, cooccurrenceCount } = rel
+
+    // Add edge in both directions (undirected)
+    if (!adjacencyList.has(sourceEntityId)) {
+      adjacencyList.set(sourceEntityId, [])
+    }
+    if (!adjacencyList.has(targetEntityId)) {
+      adjacencyList.set(targetEntityId, [])
+    }
+
+    adjacencyList.get(sourceEntityId)!.push({
+      entityId: targetEntityId,
+      weight: strength || 0,
+      cooccurrenceCount: cooccurrenceCount || 0,
+    })
+    adjacencyList.get(targetEntityId)!.push({
+      entityId: sourceEntityId,
+      weight: strength || 0,
+      cooccurrenceCount: cooccurrenceCount || 0,
+    })
+  }
+
+  return adjacencyList
 }
 
 export default defineEventHandler(async (event) => {
@@ -46,41 +107,7 @@ export default defineEventHandler(async (event) => {
   }
 
   try {
-    // Fetch all relationships to build graph
-    const relationships = await db
-      .select({
-        sourceEntityId: entityRelationships.sourceEntityId,
-        targetEntityId: entityRelationships.targetEntityId,
-        strength: entityRelationships.strength,
-        cooccurrenceCount: entityRelationships.cooccurrenceCount,
-      })
-      .from(entityRelationships)
-
-    // Build adjacency list (undirected graph)
-    const adjacencyList = new Map<number, Array<{ entityId: number; weight: number; cooccurrenceCount: number }>>()
-
-    for (const rel of relationships) {
-      const { sourceEntityId, targetEntityId, strength, cooccurrenceCount } = rel
-
-      // Add edge in both directions (undirected)
-      if (!adjacencyList.has(sourceEntityId)) {
-        adjacencyList.set(sourceEntityId, [])
-      }
-      if (!adjacencyList.has(targetEntityId)) {
-        adjacencyList.set(targetEntityId, [])
-      }
-
-      adjacencyList.get(sourceEntityId)!.push({
-        entityId: targetEntityId,
-        weight: strength || 0,
-        cooccurrenceCount: cooccurrenceCount || 0,
-      })
-      adjacencyList.get(targetEntityId)!.push({
-        entityId: sourceEntityId,
-        weight: strength || 0,
-        cooccurrenceCount: cooccurrenceCount || 0,
-      })
-    }
+    const adjacencyList = await getGraph(db)
 
     // Find shortest path using Dijkstra's algorithm (weighted by strength)
     const path = findShortestPath(adjacencyList, sourceId, targetId, maxDepth)
@@ -102,7 +129,7 @@ export default defineEventHandler(async (event) => {
         slug: entities.slug,
       })
       .from(entities)
-      .where(sql`${entities.id} = ANY(${entityIds})`)
+      .where(inArray(entities.id, entityIds))
 
     // Build entity map
     const entityMap = new Map(entityDetails.map(e => [e.id, e]))
@@ -143,7 +170,7 @@ export default defineEventHandler(async (event) => {
  * Returns null if no path exists within maxDepth
  */
 function findShortestPath(
-  graph: Map<number, Array<{ entityId: number; weight: number; cooccurrenceCount: number }>>,
+  graph: Graph,
   sourceId: number,
   targetId: number,
   maxDepth: number
@@ -152,20 +179,18 @@ function findShortestPath(
   edges: PathEdge[]
   totalWeight: number
 } | null {
-  // Priority queue: [entityId, distance, depth]
-  const queue: Array<{ entityId: number; distance: number; depth: number }> = [
-    { entityId: sourceId, distance: 0, depth: 0 }
-  ]
+  // Priority queue (binary min-heap on distance): [entityId, distance, depth]
+  const queue = new MinHeap<{ entityId: number; distance: number; depth: number }>((a, b) => a.distance - b.distance)
+  queue.push({ entityId: sourceId, distance: 0, depth: 0 })
 
   // Track best distances and previous nodes
   const distances = new Map<number, number>([[sourceId, 0]])
   const previous = new Map<number, { entityId: number; weight: number; cooccurrenceCount: number }>()
   const visited = new Set<number>()
 
-  while (queue.length > 0) {
+  while (queue.size > 0) {
     // Get node with minimum distance
-    queue.sort((a, b) => a.distance - b.distance)
-    const current = queue.shift()!
+    const current = queue.pop()!
 
     if (visited.has(current.entityId)) continue
     visited.add(current.entityId)
@@ -245,4 +270,45 @@ function reconstructPath(
   path.unshift({ entityId: sourceId, name: '', type: '', slug: null })
 
   return { nodes: path, edges, totalWeight }
+}
+
+class MinHeap<T> {
+  private items: T[] = []
+  constructor(private compare: (a: T, b: T) => number) {}
+
+  get size() {
+    return this.items.length
+  }
+
+  push(item: T) {
+    const items = this.items
+    items.push(item)
+    let i = items.length - 1
+    while (i > 0) {
+      const parent = (i - 1) >> 1
+      if (this.compare(items[i]!, items[parent]!) >= 0) break
+      ;[items[i], items[parent]] = [items[parent]!, items[i]!]
+      i = parent
+    }
+  }
+
+  pop(): T | undefined {
+    const items = this.items
+    const top = items[0]
+    const last = items.pop()
+    if (items.length > 0 && last !== undefined) {
+      items[0] = last
+      let i = 0
+      for (;;) {
+        const left = 2 * i + 1, right = left + 1
+        let smallest = i
+        if (left < items.length && this.compare(items[left]!, items[smallest]!) < 0) smallest = left
+        if (right < items.length && this.compare(items[right]!, items[smallest]!) < 0) smallest = right
+        if (smallest === i) break
+        ;[items[i], items[smallest]] = [items[smallest]!, items[i]!]
+        i = smallest
+      }
+    }
+    return top
+  }
 }

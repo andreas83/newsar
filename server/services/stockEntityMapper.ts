@@ -24,60 +24,7 @@ function normalizeCompanyName(name: string): string {
     .toLowerCase()
 }
 
-/**
- * Manually map an entity to a ticker.
- */
-export async function mapEntityToTicker(entityId: number, ticker: string): Promise<boolean> {
-  const db = getDatabase()
 
-  const [item] = await db.select()
-    .from(stockWatchlist)
-    .where(eq(stockWatchlist.ticker, ticker.toUpperCase()))
-    .limit(1)
-
-  if (!item) return false
-
-  await db.update(stockWatchlist)
-    .set({
-      entityId,
-      mappingMethod: 'manual',
-      mappingConfidence: 1.0,
-      updatedAt: new Date(),
-    })
-    .where(eq(stockWatchlist.id, item.id))
-
-  return true
-}
-
-/**
- * Suggest a ticker for an entity by searching Finnhub by name.
- */
-export async function suggestTickerForEntity(entityId: number): Promise<{ ticker: string; name: string; type: string }[]> {
-  const db = getDatabase()
-
-  const [entity] = await db.select({
-    name: entities.name,
-    canonicalName: entities.canonicalName,
-  })
-    .from(entities)
-    .where(eq(entities.id, entityId))
-    .limit(1)
-
-  if (!entity) return []
-
-  const searchName = entity.canonicalName || entity.name
-  const results = await searchSymbol(searchName)
-
-  // Filter to common stock types
-  return results
-    .filter(r => r.type === 'Common Stock' || r.type === 'ETP' || r.type === 'ADR')
-    .slice(0, 10)
-    .map(r => ({
-      ticker: r.symbol,
-      name: r.description,
-      type: r.type,
-    }))
-}
 
 /**
  * Auto-map entities to tickers by matching names.

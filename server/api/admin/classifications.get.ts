@@ -1,39 +1,24 @@
 import { getDatabase } from '~/server/database/db'
 import { articles, classifications, articleEntities } from '~/server/database/schema'
-import { eq } from 'drizzle-orm'
+import { desc, eq, getTableColumns, sql } from 'drizzle-orm'
 
 export default defineEventHandler(async (event) => {
   const db = getDatabase()
 
   try {
-    // Get all classifications
-    const allClassifications = await db
-      .select()
-      .from(classifications)
-
-    // Enrich with article titles and entity counts
-    const enriched = await Promise.all(
-      allClassifications.map(async (classification) => {
-        // Get article title
-        const [article] = await db
-          .select({ title: articles.title })
-          .from(articles)
-          .where(eq(articles.id, classification.articleId))
-          .limit(1)
-
-        // Get entity count
-        const entities = await db
-          .select()
-          .from(articleEntities)
-          .where(eq(articleEntities.articleId, classification.articleId))
-
-        return {
-          ...classification,
-          articleTitle: article?.title || 'Unknown',
-          entityCount: entities.length,
-        }
+    // Newest classifications only (default 100): one query with a join and an aggregate,
+    // instead of loading the whole table plus two queries per row
+    const limit = Math.min(parseInt((getQuery(event).limit as string) || '100'), 1000)
+    const enriched = await db
+      .select({
+        ...getTableColumns(classifications),
+        articleTitle: sql<string>`COALESCE(${articles.title}, 'Unknown')`,
+        entityCount: sql<number>`(SELECT COUNT(*)::int FROM ${articleEntities} WHERE ${articleEntities.articleId} = ${classifications.articleId})`,
       })
-    )
+      .from(classifications)
+      .leftJoin(articles, eq(articles.id, classifications.articleId))
+      .orderBy(desc(classifications.createdAt))
+      .limit(limit)
 
     return enriched
   } catch (error) {

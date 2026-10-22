@@ -1,24 +1,9 @@
 <script setup lang="ts">
-const activeTab = ref<'overview' | 'trades' | 'model'>('overview')
+const activeTab = ref<'overview' | 'trades'>('overview')
 const selectedPortfolio = ref<number | null>(null)
 
 const { data: comparison, pending: compPending } = await useFetch(
   '/api/stocks/paper-trading?action=comparison'
-)
-
-const { data: modelStatus } = await useFetch(
-  '/api/stocks/ml-model?action=status',
-  { lazy: true }
-)
-
-const { data: modelMetrics } = await useFetch(
-  '/api/stocks/ml-model?action=metrics',
-  { lazy: true }
-)
-
-const { data: modelFeatures } = await useFetch(
-  '/api/stocks/ml-model?action=features',
-  { lazy: true }
 )
 
 // Portfolio detail fetched when selected (client-only — depends on selectedPortfolio)
@@ -80,9 +65,18 @@ function pnlColor(val: any): string {
     <div class="mb-6">
       <h1 class="text-3xl font-bold font-serif text-ink mb-2">Trading Simulator</h1>
       <p class="text-ink-3">
-        Paper trading comparison: ML model vs heuristic signals vs SPY benchmark.
+        Paper portfolios that follow each model's calls, compared with simply holding SPY.
       </p>
     </div>
+
+    <!-- Sub Nav -->
+    <StockSubNav />
+
+    <p class="mb-6 text-sm text-ink-3 max-w-3xl">
+      Neither model has shown it can predict which stocks beat the market
+      (<NuxtLink to="/stocks/predictions" class="text-accent hover:underline">see the track record</NuxtLink>),
+      so these portfolios are an experiment, not a strategy. The benchmark to beat is SPY.
+    </p>
 
     <!-- Tab Nav -->
     <div class="flex items-center gap-1 mb-6 border-b border-rule">
@@ -90,7 +84,6 @@ function pnlColor(val: any): string {
         v-for="tab in [
           { key: 'overview', label: 'Overview' },
           { key: 'trades', label: 'Trades' },
-          { key: 'model', label: 'ML Model' },
         ]"
         :key="tab.key"
         class="px-4 py-2.5 text-sm font-mono font-medium transition-colors relative"
@@ -324,123 +317,6 @@ function pnlColor(val: any): string {
         </div>
         <div v-else class="py-8 text-center text-ink-4 text-sm">
           No trades yet.
-        </div>
-      </div>
-
-      <!-- ML MODEL TAB -->
-      <div v-if="activeTab === 'model'">
-        <!-- Model Status -->
-        <div class="border border-rule rounded-lg p-5 bg-surface mb-6">
-          <h3 class="font-mono font-semibold text-sm text-ink mb-4">Model Status</h3>
-
-          <div v-if="modelStatus?.hasModels" class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div>
-              <div class="text-xs text-ink-4 font-mono mb-1">Trained</div>
-              <div class="text-sm font-mono text-ink">
-                {{ modelStatus.trainingDate ? new Date(modelStatus.trainingDate).toLocaleDateString() : '—' }}
-              </div>
-            </div>
-            <div>
-              <div class="text-xs text-ink-4 font-mono mb-1">Samples</div>
-              <div class="text-sm font-mono text-ink">{{ modelStatus.totalSamples || '—' }}</div>
-            </div>
-            <div>
-              <div class="text-xs text-ink-4 font-mono mb-1">Features</div>
-              <div class="text-sm font-mono text-ink">{{ modelStatus.totalFeatures || '—' }}</div>
-            </div>
-            <div>
-              <div class="text-xs text-ink-4 font-mono mb-1">Walk-Forward Folds</div>
-              <div class="text-sm font-mono text-ink">{{ modelStatus.nFolds || '—' }}</div>
-            </div>
-          </div>
-
-          <div v-else class="py-4 text-center text-ink-4 text-sm">
-            No ML models trained. Run:
-            <code class="bg-surface-2 px-1.5 py-0.5 rounded text-xs ml-1">npm run ml:features && npm run ml:train</code>
-          </div>
-        </div>
-
-        <!-- Model Comparison -->
-        <div v-if="modelMetrics?.models" class="border border-rule rounded-lg p-5 bg-surface mb-6">
-          <h3 class="font-mono font-semibold text-sm text-ink mb-4">Walk-Forward Performance</h3>
-
-          <div class="overflow-x-auto">
-            <table class="w-full text-sm font-mono">
-              <thead>
-                <tr class="text-xs text-ink-4 border-b border-rule">
-                  <th class="text-left py-2 pr-4">Model</th>
-                  <th class="text-right py-2 pr-4">AUC</th>
-                  <th class="text-right py-2 pr-4">Accuracy</th>
-                  <th class="text-right py-2 pr-4">Precision</th>
-                  <th class="text-right py-2 pr-4">Recall</th>
-                  <th class="text-right py-2">F1</th>
-                </tr>
-              </thead>
-              <tbody>
-                <!-- Random baseline -->
-                <tr v-if="modelMetrics.randomBaseline" class="border-b border-rule/30 text-ink-4">
-                  <td class="py-2 pr-4">Random (baseline)</td>
-                  <td class="py-2 pr-4 text-right">0.500</td>
-                  <td class="py-2 pr-4 text-right">{{ (modelMetrics.randomBaseline.accuracy_always_majority * 100).toFixed(1) }}%</td>
-                  <td class="py-2 pr-4 text-right">—</td>
-                  <td class="py-2 pr-4 text-right">—</td>
-                  <td class="py-2 text-right">—</td>
-                </tr>
-
-                <!-- Heuristic -->
-                <tr v-if="modelMetrics.heuristicBaseline?.['5d']?.accuracy != null" class="border-b border-rule/30">
-                  <td class="py-2 pr-4">Heuristic (5d)</td>
-                  <td class="py-2 pr-4 text-right">{{ modelMetrics.heuristicBaseline['5d'].roc_auc?.toFixed(3) || '—' }}</td>
-                  <td class="py-2 pr-4 text-right">{{ (modelMetrics.heuristicBaseline['5d'].accuracy * 100).toFixed(1) }}%</td>
-                  <td class="py-2 pr-4 text-right">—</td>
-                  <td class="py-2 pr-4 text-right">—</td>
-                  <td class="py-2 text-right">{{ modelMetrics.heuristicBaseline['5d'].f1?.toFixed(3) || '—' }}</td>
-                </tr>
-
-                <!-- ML Models -->
-                <tr v-for="(info, name) in modelMetrics.models" :key="name" class="border-b border-rule/30">
-                  <td class="py-2 pr-4 font-semibold">{{ name }}</td>
-                  <td class="py-2 pr-4 text-right" :class="info.avgMetrics.roc_auc > 0.55 ? 'text-emerald-500 font-bold' : ''">
-                    {{ info.avgMetrics.roc_auc?.toFixed(3) || '—' }}
-                  </td>
-                  <td class="py-2 pr-4 text-right">
-                    {{ info.avgMetrics.accuracy ? (info.avgMetrics.accuracy * 100).toFixed(1) + '%' : info.avgMetrics.direction_accuracy ? (info.avgMetrics.direction_accuracy * 100).toFixed(1) + '%' : '—' }}
-                  </td>
-                  <td class="py-2 pr-4 text-right">{{ info.avgMetrics.precision ? (info.avgMetrics.precision * 100).toFixed(1) + '%' : '—' }}</td>
-                  <td class="py-2 pr-4 text-right">{{ info.avgMetrics.recall ? (info.avgMetrics.recall * 100).toFixed(1) + '%' : '—' }}</td>
-                  <td class="py-2 text-right">{{ info.avgMetrics.f1?.toFixed(3) || info.avgMetrics.rmse ? 'RMSE=' + info.avgMetrics.rmse?.toFixed(2) : '—' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Feature Importance -->
-        <div v-if="modelFeatures?.featureImportance" class="border border-rule rounded-lg p-5 bg-surface">
-          <h3 class="font-mono font-semibold text-sm text-ink mb-4">Feature Importance (Top 20)</h3>
-
-          <div v-for="(features, modelName) in modelFeatures.featureImportance" :key="modelName" class="mb-6 last:mb-0">
-            <h4 class="text-xs font-mono text-ink-3 mb-3">{{ modelName }}</h4>
-
-            <div class="space-y-1.5">
-              <div
-                v-for="(feat, idx) in features.slice(0, 20)"
-                :key="feat.feature"
-                class="flex items-center gap-3"
-              >
-                <span class="text-xs font-mono text-ink-4 w-6 text-right">{{ idx + 1 }}.</span>
-                <span class="text-xs font-mono text-ink w-48 truncate">{{ feat.feature }}</span>
-                <div class="flex-1 h-3 bg-surface-2 rounded overflow-hidden">
-                  <div
-                    class="h-full rounded"
-                    :class="idx < 3 ? 'bg-accent' : idx < 7 ? 'bg-blue-400' : 'bg-blue-300'"
-                    :style="{ width: (feat.importance / features[0].importance * 100) + '%' }"
-                  />
-                </div>
-                <span class="text-xs font-mono text-ink-4 w-16 text-right">{{ feat.importance.toFixed(4) }}</span>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </template>

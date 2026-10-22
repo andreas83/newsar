@@ -1,0 +1,255 @@
+[
+  {
+    "training_date": "2026-06-07T18:36:21.946835",
+    "total_samples": 351,
+    "total_features": 37,
+    "n_folds": 20,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6133348794063079,
+        "accuracy": 0.6035714285714284,
+        "f1": 0.0743421052631579
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6448705979612572,
+        "accuracy": 0.6714285714285714,
+        "f1": 0.22205808639245167
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7222012419814619,
+        "accuracy": 0.5785714285714285,
+        "f1": 0.21690242763772175
+      }
+    }
+  },
+  {
+    "training_date": "2026-06-21T03:35:01.135689",
+    "total_samples": 365,
+    "total_features": 37,
+    "n_folds": 21,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.5958309547595262,
+        "accuracy": 0.6054421768707482,
+        "f1": 0.06746031746031746
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6890653912631935,
+        "accuracy": 0.6904761904761905,
+        "f1": 0.2168457813747508
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7193493319866947,
+        "accuracy": 0.5578231292517006,
+        "f1": 0.20657374060735403
+      }
+    }
+  },
+  {
+    "training_date": "2026-06-28T03:32:03.264707",
+    "total_samples": 372,
+    "total_features": 37,
+    "n_folds": 22,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6420685182164776,
+        "accuracy": 0.6038961038961038,
+        "f1": 0.0608288770053476
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6875628481495827,
+        "accuracy": 0.7045454545454546,
+        "f1": 0.21449767669863362
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7350668039443551,
+        "accuracy": 0.5454545454545454,
+        "f1": 0.21536584330701977
+      }
+    }
+  },
+  {
+    "training_date": "2026-07-05T03:36:08.893736",
+    "total_samples": 379,
+    "total_features": 37,
+    "n_folds": 22,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6538010034183505,
+        "accuracy": 0.62012987012987,
+        "f1": 0.0555258467023173
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6945645341053505,
+        "accuracy": 0.7077922077922079,
+        "f1": 0.2024619354710888
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7395007203680674,
+        "accuracy": 0.5454545454545454,
+        "f1": 0.21536584330701977
+      }
+    }
+  },
+  {
+    "training_date": "2026-07-12T03:34:57.520474",
+    "total_samples": 386,
+    "total_features": 37,
+    "n_folds": 23,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6576587301587302,
+        "accuracy": 0.6149068322981366,
+        "f1": 0.06128973328461819
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6804177766677768,
+        "accuracy": 0.6801242236024845,
+        "f1": 0.1743543641712978
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7290895612324185,
+        "accuracy": 0.546583850931677,
+        "f1": 0.22339341533714938
+      }
+    }
+  },
+  {
+    "training_date": "2026-07-19T03:31:58.278978",
+    "total_samples": 393,
+    "total_features": 37,
+    "n_folds": 23,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6357137703566274,
+        "accuracy": 0.6086956521739129,
+        "f1": 0.08333333333333333
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.7007912722198435,
+        "accuracy": 0.6677018633540374,
+        "f1": 0.1728340458990614
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7263117834546406,
+        "accuracy": 0.5434782608695652,
+        "f1": 0.22339341533714938
+      }
+    }
+  },
+  {
+    "training_date": "2026-07-26T03:31:37.251421",
+    "total_samples": 400,
+    "total_features": 37,
+    "n_folds": 24,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6291729475881261,
+        "accuracy": 0.5952380952380952,
+        "f1": 0.09176587301587301
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6898622149180185,
+        "accuracy": 0.6547619047619048,
+        "f1": 0.2009972848788638
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.725188130322059,
+        "accuracy": 0.550595238095238,
+        "f1": 0.24669405201694206
+      }
+    }
+  },
+  {
+    "training_date": "2026-08-02T03:33:06.510935",
+    "total_samples": 407,
+    "total_features": 37,
+    "n_folds": 24,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6635005991032776,
+        "accuracy": 0.5982142857142857,
+        "f1": 0.09176587301587301
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.7066530195994482,
+        "accuracy": 0.6577380952380952,
+        "f1": 0.20360560492139443
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.723625630322059,
+        "accuracy": 0.550595238095238,
+        "f1": 0.24669405201694206
+      }
+    }
+  },
+  {
+    "training_date": "2026-08-09T03:32:27.800917",
+    "total_samples": 414,
+    "total_features": 37,
+    "n_folds": 25,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6412303732681884,
+        "accuracy": 0.6057142857142858,
+        "f1": 0.08809523809523809
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6896088680227336,
+        "accuracy": 0.6485714285714286,
+        "f1": 0.17646196940314585
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7153731422638987,
+        "accuracy": 0.5571428571428572,
+        "f1": 0.2528262899362644
+      }
+    }
+  },
+  {
+    "training_date": "2026-08-16T03:32:51.475313",
+    "total_samples": 421,
+    "total_features": 37,
+    "n_folds": 25,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6607518182098013,
+        "accuracy": 0.6028571428571429,
+        "f1": 0.08809523809523809
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6695581204509776,
+        "accuracy": 0.68,
+        "f1": 0.1733784461152882
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7153731422638987,
+        "accuracy": 0.56,
+        "f1": 0.26060406771404215
+      }
+    }
+  },
+  {
+    "training_date": "2026-08-23T10:10:11.617213",
+    "total_samples": 428,
+    "total_features": 37,
+    "n_folds": 26,
+    "models": {
+      "btc_xgb_2w_classifier": {
+        "roc_auc": 0.6510033733773231,
+        "accuracy": 0.6126373626373627,
+        "f1": 0.08740601503759399
+      },
+      "btc_lgbm_2w_classifier": {
+        "roc_auc": 0.6753431617402206,
+        "accuracy": 0.6868131868131867,
+        "f1": 0.18483665457349666
+      },
+      "btc_logreg_baseline": {
+        "roc_auc": 0.7104711814795849,
+        "accuracy": 0.5769230769230769,
+        "f1": 0.24756424308853978
+      }
+    }
+  }
+]

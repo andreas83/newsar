@@ -43,17 +43,17 @@ function formatDate(date: string | Date | null) {
   if (hours < 1) return 'Just now'
   if (hours < 24) return `${hours}h ago`
   if (hours < 48) return 'Yesterday'
-  return d.toLocaleDateString()
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC' })
 }
 
 function formatPeriodLabel(periodStart: string, periodEnd: string, bucketType: string) {
   const start = new Date(periodStart)
   const end = new Date(periodEnd)
-  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-  const optsWithYear: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' }
+  const opts: Intl.DateTimeFormatOptions = { timeZone: 'UTC', month: 'short', day: 'numeric' }
+  const optsWithYear: Intl.DateTimeFormatOptions = { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' }
 
   if (bucketType === '12h') {
-    const hour = start.getHours()
+    const hour = start.getUTCHours()
     const label = hour < 12 ? 'Morning' : 'Evening'
     return `${start.toLocaleDateString('en-US', opts)} ${label}`
   }
@@ -64,7 +64,7 @@ function formatPeriodLabel(periodStart: string, periodEnd: string, bucketType: s
     const endDisplay = new Date(end.getTime() - 1)
     return `${start.toLocaleDateString('en-US', opts)} – ${endDisplay.toLocaleDateString('en-US', opts)}`
   }
-  return start.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+  return start.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'long', year: 'numeric' })
 }
 
 function framingDisplayName(framing: string): string {

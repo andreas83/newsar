@@ -4,19 +4,22 @@
  * Combines recent anomaly events with historical signal profiles to produce
  * buy/sell recommendations with dual timeframe outlook (short-term 1-5d, medium-term 1-4w).
  *
- * Composite Score Algorithm (5 weighted factors):
+ * Heuristic Composite Score Algorithm (5 weighted factors):
  *   0.35 * Historical win rate (from signal profiles)
  *   0.20 * Anomaly confidence (from stock_news_correlations)
  *   0.15 * Event type strength (3x=1.0, 2x=0.6, diversity=0.4)
  *   0.15 * Source diversity (min(1, (sources-1)/4))
  *   0.15 * Mention multiplier (min(1, (multiplier-2)/6))
  *
- * Score is dampened toward 0.5 proportionally to profile_confidence,
- * so tickers with few historical events don't produce strong signals.
+ * Overall signal weighted toward medium-term: 0.3 * short + 0.7 * medium.
+ * Score is dampened toward 0.5 proportionally to profile_confidence.
+ *
+ * ML integration uses 4-week models only (alpha + raw return classifiers).
  */
 
 import { getDatabase } from '../database/db'
 import { sql } from 'drizzle-orm'
+import { getPriceOnDate, getForwardChangePct } from '../utils/priceSeries'
 
 let db: ReturnType<typeof getDatabase> | null = null
 function getDb() {
@@ -60,6 +63,7 @@ interface ProfileRow {
 function eventTypeStrength(eventType: string): number {
   if (eventType === 'volume_spike_3x') return 1.0
   if (eventType === 'volume_spike_2x') return 0.6
+  if (eventType === 'volume_spike_1_5x') return 0.35
   if (eventType === 'source_diversity_spike') return 0.4
   return 0.3
 }
@@ -134,6 +138,9 @@ export async function generateRecommendations(daysBack: number = 7): Promise<{ g
   let generated = 0
   let skipped = 0
 
+  // Track which watchlist IDs get new signals so we can expire older ones
+  const watchlistIdsWithNewSignals = new Set<number>()
+
   for (const row of anomalies.rows as any[]) {
     const watchlistId = parseInt(row.watchlist_id)
     const correlationId = parseInt(row.id)
@@ -192,21 +199,21 @@ export async function generateRecommendations(daysBack: number = 7): Promise<{ g
     const shortScore = +(0.5 + (shortRaw - 0.5) * profConf).toFixed(4)
     const mediumScore = +(0.5 + (mediumRaw - 0.5) * profConf).toFixed(4)
 
-    // Overall signal: average of short and medium, weighted toward short
-    const overallScore = +(shortScore * 0.6 + mediumScore * 0.4).toFixed(4)
+    // Overall signal: weighted toward medium-term (4w models are more reliable)
+    const overallScore = +(shortScore * 0.3 + mediumScore * 0.7).toFixed(4)
 
     // Directions
     const shortDir = computeDirection(shortScore, profile.avgChange5d)
     const mediumDir = computeDirection(mediumScore, profile.avgChange4w)
 
-    // Overall direction: prioritize short-term if both agree; else use the stronger signal
+    // Overall direction: prioritize medium-term (more reliable); short-term as tiebreaker
     let overallDir: 'bullish' | 'bearish' | 'neutral' = 'neutral'
     if (shortDir === mediumDir && shortDir !== 'neutral') {
       overallDir = shortDir
-    } else if (shortDir !== 'neutral') {
-      overallDir = shortDir
     } else if (mediumDir !== 'neutral') {
       overallDir = mediumDir
+    } else if (shortDir !== 'neutral') {
+      overallDir = shortDir
     }
 
     // Expiry: 5 trading days from event
@@ -237,6 +244,7 @@ export async function generateRecommendations(daysBack: number = 7): Promise<{ g
         event_strength, historical_winrate, anomaly_confidence,
         source_diversity, mention_multiplier,
         event_type, event_date, trigger_metadata,
+        model_source,
         status, expires_at
       ) VALUES (
         ${watchlistId}, ${correlationId}, ${profile.id},
@@ -246,11 +254,13 @@ export async function generateRecommendations(daysBack: number = 7): Promise<{ g
         ${evtStrength}, ${shortWinRate}, ${anomalyConf},
         ${srcDiversity}, ${mentionMult},
         ${eventType}, ${eventDate}, ${JSON.stringify(triggerMeta)}::jsonb,
+        'heuristic',
         'active', ${expiresAt}
       )
       ON CONFLICT (correlation_id, model_source) DO NOTHING
     `)
 
+    watchlistIdsWithNewSignals.add(watchlistId)
     generated++
 
     console.log(
@@ -261,7 +271,22 @@ export async function generateRecommendations(daysBack: number = 7): Promise<{ g
     )
   }
 
-  // Expire old recommendations
+  // For each ticker that got new signals, expire older active signals so only
+  // the most recent event's signals remain active (prevents conflicting signals)
+  for (const wId of watchlistIdsWithNewSignals) {
+    await getDb().execute(sql`
+      UPDATE stock_recommendations
+      SET status = 'expired', updated_at = NOW()
+      WHERE watchlist_id = ${wId}
+        AND status = 'active'
+        AND event_date < (
+          SELECT MAX(event_date) FROM stock_recommendations
+          WHERE watchlist_id = ${wId} AND status = 'active'
+        )
+    `)
+  }
+
+  // Expire old recommendations past their expiry date
   await getDb().execute(sql`
     UPDATE stock_recommendations
     SET status = 'expired', updated_at = NOW()
@@ -272,10 +297,41 @@ export async function generateRecommendations(daysBack: number = 7): Promise<{ g
 }
 
 /**
+ * Days after the event at which the 4-week window is treated as settled. A row
+ * with no 4w price by then will never get one, so it is closed rather than
+ * rescanned indefinitely. 20 trading days plus slack for holidays and gaps.
+ */
+const FOUR_WEEK_SETTLE_DAYS = 45
+
+/**
+ * Watchlist id of the benchmark (SPY), looked up once.
+ *
+ * The alpha model is trained on "beat SPY", so validation has to record what SPY
+ * did over the identical window — otherwise the label the model was trained on
+ * cannot be reconstructed at scoring time, which is how signal_direction came to
+ * be graded against raw return instead.
+ */
+let benchmarkWatchlistId: number | null | undefined
+
+async function getBenchmarkWatchlistId(): Promise<number | null> {
+  if (benchmarkWatchlistId !== undefined) return benchmarkWatchlistId
+  const result = await getDb().execute(sql`
+    SELECT id FROM stock_watchlist WHERE ticker = 'SPY' ORDER BY id LIMIT 1
+  `)
+  benchmarkWatchlistId = result.rows.length > 0 ? parseInt((result.rows[0] as any).id) : null
+  if (benchmarkWatchlistId == null) {
+    console.warn('[SignalGen] SPY not in watchlist — benchmark-relative outcomes unavailable')
+  }
+  return benchmarkWatchlistId
+}
+
+/**
  * Validate past recommendations by looking up actual price outcomes.
  */
-export async function validateRecommendations(): Promise<{ validated: number; noData: number }> {
-  // Find active/expired recommendations that haven't been validated yet
+export async function validateRecommendations(): Promise<{ validated: number; partial: number; noData: number }> {
+  // A recommendation counts as validated only once its 4-week outcome is known.
+  // Rows keep validated_at NULL while the 4w window is still open, so signals that
+  // only had 5d prices available on an earlier run get completed on a later one.
   const recs = await getDb().execute(sql`
     SELECT
       r.id, r.watchlist_id, r.event_date, r.signal_direction, r.signal_strength,
@@ -287,6 +343,7 @@ export async function validateRecommendations(): Promise<{ validated: number; no
   `)
 
   let validated = 0
+  let partial = 0
   let noData = 0
 
   for (const row of recs.rows as any[]) {
@@ -350,21 +407,36 @@ export async function validateRecommendations(): Promise<{ validated: number; no
       continue
     }
 
+    // The 4w outcome needs 20 trading days of forward prices. Until those exist,
+    // store whatever is available but leave the row open so it is revisited.
+    // Past the settle cutoff the window is definitively over, so close the row
+    // out even without a 4w price — otherwise it would be rescanned forever.
+    // SPY over the same 20 trading days, so the alpha label is reconstructible.
+    const benchmarkId = await getBenchmarkWatchlistId()
+    const benchmarkChange4w = benchmarkId != null && actualChange4w != null
+      ? await getForwardChangePct(benchmarkId, eventDateStr, 19)
+      : null
+
+    const eventAgeDays = (Date.now() - eventDate.getTime()) / 86_400_000
+    const windowClosed = actualChange4w != null || eventAgeDays > FOUR_WEEK_SETTLE_DAYS
+
     await getDb().execute(sql`
       UPDATE stock_recommendations
       SET
-        actual_change_5d = ${actualChange5d},
-        actual_change_4w = ${actualChange4w},
-        validated_at = NOW(),
-        status = 'validated',
+        actual_change_5d = COALESCE(${actualChange5d}, actual_change_5d),
+        actual_change_4w = COALESCE(${actualChange4w}, actual_change_4w),
+        actual_benchmark_change_4w = COALESCE(${benchmarkChange4w}, actual_benchmark_change_4w),
+        validated_at = ${windowClosed ? sql`NOW()` : sql`NULL`},
+        status = ${windowClosed ? sql`'validated'` : sql`status`},
         updated_at = NOW()
       WHERE id = ${recId}
     `)
 
-    validated++
+    if (windowClosed) validated++
+    else partial++
   }
 
-  return { validated, noData }
+  return { validated, partial, noData }
 }
 
 /**
@@ -389,7 +461,7 @@ export async function generateMLRecommendations(daysBack: number = 7): Promise<{
   }
 
   // Check if models exist
-  const modelPath = path.join(mlDir, 'models', 'xgb_5d_classifier.joblib')
+  const modelPath = path.join(mlDir, 'models', 'xgb_4w_classifier.joblib')
   if (!fs.existsSync(modelPath)) {
     console.log('[SignalGen-ML] No trained models found. Run `npm run ml:train` first. Falling back to heuristic.')
     return { generated: 0, errors: 0 }
@@ -436,27 +508,39 @@ export async function generateMLRecommendations(daysBack: number = 7): Promise<{
 
       let generated = 0
       let errors = 0
+      const watchlistIdsWithMLSignals = new Set<number>()
 
       for (const pred of predictions) {
         try {
-          const probUp5d = pred.prob_up_5d ?? 0.5
-          const expectedChange5d = pred.expected_change_5d ?? 0
           const probUp4w = pred.prob_up_4w ?? 0.5
+          const probAlpha4w = pred.prob_alpha_4w ?? 0.5
           const mlConfidence = pred.confidence ?? 0
 
-          // Map ML probability to signal direction
+          // Map ML alpha probability to signal direction (primary: will stock beat SPY?)
           let direction: 'bullish' | 'bearish' | 'neutral' = 'neutral'
-          if (probUp5d > 0.6 && expectedChange5d > 0) direction = 'bullish'
-          else if (probUp5d < 0.4 && expectedChange5d < 0) direction = 'bearish'
+          if (probAlpha4w > 0.6) direction = 'bullish'
+          else if (probAlpha4w < 0.4) direction = 'bearish'
 
-          // Signal strength = distance from 0.5 (0 to 1 scale)
-          const strength = Math.abs(probUp5d - 0.5) * 2
+          // Medium-term direction from raw return model
+          const mediumDir = probUp4w > 0.6 ? 'bullish' : probUp4w < 0.4 ? 'bearish' : 'neutral'
+
+          // Signal strength = distance from 0.5 (0 to 1 scale), based on alpha model
+          const strength = Math.abs(probAlpha4w - 0.5) * 2
 
           const eventDate = new Date(pred.event_date)
           const expiresAt = new Date(eventDate)
-          expiresAt.setDate(expiresAt.getDate() + 7)
+          expiresAt.setDate(expiresAt.getDate() + 28) // 4-week horizon
 
-          // Insert ML recommendation as separate row (composite unique on correlation_id + model_source)
+          // Insert ML recommendation (composite unique on correlation_id + model_source)
+          // ML supersedes heuristic, so expire the heuristic signal for this correlation
+          await getDb().execute(sql`
+            UPDATE stock_recommendations
+            SET status = 'expired', updated_at = NOW()
+            WHERE correlation_id = ${pred.correlation_id}
+              AND model_source = 'heuristic'
+              AND status = 'active'
+          `)
+
           await getDb().execute(sql`
             INSERT INTO stock_recommendations (
               watchlist_id, correlation_id,
@@ -465,17 +549,17 @@ export async function generateMLRecommendations(daysBack: number = 7): Promise<{
               medium_term_direction, medium_term_confidence,
               event_type, event_date,
               model_source,
-              ml_prob_up_5d, ml_expected_change_5d, ml_prob_up_4w, ml_confidence,
+              ml_prob_up_4w, ml_confidence,
               status, expires_at
             )
             SELECT
               c.watchlist_id, ${pred.correlation_id},
               ${direction}, ${strength},
-              ${direction}, ${probUp5d},
-              ${probUp4w > 0.6 ? 'bullish' : probUp4w < 0.4 ? 'bearish' : 'neutral'}, ${probUp4w},
+              ${direction}, ${probAlpha4w},
+              ${mediumDir}, ${probUp4w},
               c.event_type, c.event_date,
               'ml_model',
-              ${probUp5d}, ${expectedChange5d}, ${probUp4w}, ${mlConfidence},
+              ${probUp4w}, ${mlConfidence},
               'active', ${expiresAt}
             FROM stock_news_correlations c
             WHERE c.id = ${pred.correlation_id}
@@ -486,19 +570,39 @@ export async function generateMLRecommendations(daysBack: number = 7): Promise<{
               short_term_confidence = EXCLUDED.short_term_confidence,
               medium_term_direction = EXCLUDED.medium_term_direction,
               medium_term_confidence = EXCLUDED.medium_term_confidence,
-              ml_prob_up_5d = EXCLUDED.ml_prob_up_5d,
-              ml_expected_change_5d = EXCLUDED.ml_expected_change_5d,
               ml_prob_up_4w = EXCLUDED.ml_prob_up_4w,
               ml_confidence = EXCLUDED.ml_confidence,
               status = 'active',
               updated_at = NOW()
           `)
 
+          // Track watchlist_id for older-event expiry
+          const corrRow = await getDb().execute(sql`
+            SELECT watchlist_id FROM stock_news_correlations WHERE id = ${pred.correlation_id}
+          `)
+          if (corrRow.rows.length > 0) {
+            watchlistIdsWithMLSignals.add(parseInt((corrRow.rows[0] as any).watchlist_id))
+          }
+
           generated++
         } catch (e) {
           console.error(`[SignalGen-ML] Error storing prediction for correlation ${pred.correlation_id}:`, e)
           errors++
         }
+      }
+
+      // Expire older active signals per ticker so only the latest event's signals stay active
+      for (const wId of watchlistIdsWithMLSignals) {
+        await getDb().execute(sql`
+          UPDATE stock_recommendations
+          SET status = 'expired', updated_at = NOW()
+          WHERE watchlist_id = ${wId}
+            AND status = 'active'
+            AND event_date < (
+              SELECT MAX(event_date) FROM stock_recommendations
+              WHERE watchlist_id = ${wId} AND status = 'active'
+            )
+        `)
       }
 
       console.log(`[SignalGen-ML] Stored ${generated} ML predictions (${errors} errors)`)

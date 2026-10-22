@@ -178,6 +178,47 @@ npm run test:analyze [id]      # Test analysis for article ID
 npm run test:topics            # Test topic relationship computation
 ```
 
+### Stock ML Pipeline
+
+```bash
+# Anomaly detection & signal generation
+npm run stocks:anomalies [days]  # Detect news volume anomalies (cron: 7 days)
+npm run stocks:backtest          # Compute forward prices for anomaly events
+npm run stocks:signals           # Generate heuristic + ML recommendations
+npm run stocks:validate          # Validate past signal outcomes (after 4w)
+
+# ML model training & prediction
+npm run ml:sentiment             # FinBERT article sentiment scoring
+npm run ml:features [--force]    # Extract feature matrix from anomaly events
+npm run ml:train                 # Train XGBoost + LightGBM + alpha + logreg
+npm run ml:evaluate              # Generate evaluation report
+npm run ml:predict [--since N]   # Score recent anomalies with ensemble
+
+# Full retrain (weekly cron runs this on Sunday 2AM):
+npm run ml:sentiment && npm run ml:features -- --force && npm run ml:train && npm run ml:evaluate
+```
+
+**Models trained:**
+1. XGBoost 4w Classifier — will stock rise >1% in 4 weeks?
+2. XGBoost 4w Alpha — will stock beat SPY in 4 weeks?
+3. LightGBM 4w Classifier — ensemble partner for XGBoost
+4. Logistic Regression — baseline
+
+**Public page:** `/stocks/predictions` ("Spike watch") — open news spikes + plain-language track record, all graded on "beat SPY over 4 weeks", backfilled calls (created >7d after event) excluded. API: `server/api/stocks/watch.get.ts`.
+**Diagnostics:** `/admin/ml-models` — technical scorecard, training timeline, pipeline dashboard (uses `server/api/stocks/predictions.get.ts`).
+No model has shown skill on the live record (see `label_contract.json`); keep public wording "research, not advice".
+
+**Key files:**
+- `ml/train.py` — walk-forward training, saves to `ml/models/training_history.json`
+- `ml/predict.py` — ensemble scoring (XGBoost + LightGBM averaged)
+- `ml/sentiment.py` — FinBERT batch scoring for `avg_article_sentiment` feature
+- `server/api/stocks/watch.get.ts` — public Spike watch API (now, record)
+- `server/api/stocks/predictions.get.ts` — diagnostics API (4 actions)
+- `app/pages/stocks/predictions.vue` — public Spike watch page
+- `app/pages/admin/ml-models.vue` — model diagnostics
+
+See `TRADING_SIGNALS_ASSESSMENT.md` for detailed performance analysis.
+
 ## Key Technical Details
 
 ### Ollama Configuration
@@ -547,6 +588,10 @@ app/
 ├── pages/
 │   ├── admin/          # Admin dashboard pages
 │   ├── articles/       # Article detail pages
+│   ├── stocks/         # Stock market pages
+│   │   ├── index.vue         # Watchlist + nav links
+│   │   ├── predictions.vue   # Spike watch (open spikes + track record)
+│   │   └── simulator.vue     # Paper trading simulator
 │   ├── stories/        # Story coverage pages
 │   ├── topics/         # Trending topics/entities
 │   ├── [type]/[slug]/  # Entity pages (person, location, org, event)
@@ -557,6 +602,7 @@ server/
 │   ├── admin/          # Admin API (feeds, articles, jobs, stats)
 │   ├── articles/       # Article endpoints
 │   ├── entities/       # Entity endpoints (trending, preview, detail)
+│   ├── stocks/         # Stock market API (watchlist, predictions, ML model, paper trading)
 │   ├── stories/        # Story endpoints
 │   └── topics/         # Topic/keyword endpoints
 ├── database/
@@ -640,7 +686,10 @@ This ensures breaking news gets processed first.
 ### Image Handling
 
 Images are downloaded and stored locally:
-- Stored in: `public/images/articles/`
+- Stored in: `storage/images/articles/` (outside `public/` so `nuxt build` doesn't copy them into `.output`)
+- Served by nginx directly: `location /images/` aliases to `storage/images/` (Nitro is not involved; in dev without nginx, image URLs 404)
+- Converted to WebP on download (max 1200px wide, quality 80, via sharp); SVG kept as-is, GIF becomes animated WebP
+- Legacy migration: `npm run images:webp [limit] [concurrency] [--dry-run]`
 - Fallback to original URL if local fetch fails
 - Status tracked in `articles.image_fetch_status`
 

@@ -12,6 +12,8 @@
 
 import { getDatabase } from '../database/db'
 import { sql } from 'drizzle-orm'
+import { isTradeable } from '../utils/labelContract'
+import { getLatestPrice, getATR } from '../utils/priceSeries'
 
 let db: ReturnType<typeof getDatabase> | null = null
 function getDb() {
@@ -47,53 +49,6 @@ interface OpenTrade {
   takeProfit: number | null
   ticker: string
   sector: string | null
-}
-
-/**
- * Get the latest price for a watchlist item.
- */
-async function getLatestPrice(watchlistId: number): Promise<number | null> {
-  const result = await getDb().execute(sql`
-    SELECT price FROM stock_prices
-    WHERE watchlist_id = ${watchlistId}
-    ORDER BY fetched_at DESC
-    LIMIT 1
-  `)
-  if (result.rows.length === 0) return null
-  return parseFloat((result.rows[0] as any).price)
-}
-
-/**
- * Get ATR (Average True Range) for position sizing and stop loss.
- * Uses 14-day ATR approximation from daily price data.
- */
-async function getATR(watchlistId: number): Promise<number | null> {
-  const result = await getDb().execute(sql`
-    WITH daily AS (
-      SELECT DISTINCT ON (DATE(fetched_at))
-        price, high_price, low_price, previous_close,
-        DATE(fetched_at) as trade_date
-      FROM stock_prices
-      WHERE watchlist_id = ${watchlistId}
-        AND fetched_at > NOW() - INTERVAL '30 days'
-      ORDER BY DATE(fetched_at) DESC, source ASC, fetched_at DESC
-    ),
-    tr AS (
-      SELECT
-        GREATEST(
-          COALESCE(high_price, price) - COALESCE(low_price, price),
-          ABS(COALESCE(high_price, price) - COALESCE(previous_close, price)),
-          ABS(COALESCE(low_price, price) - COALESCE(previous_close, price))
-        ) as true_range
-      FROM daily
-      ORDER BY trade_date DESC
-      LIMIT 14
-    )
-    SELECT AVG(true_range) as atr FROM tr
-  `)
-  if (result.rows.length === 0) return null
-  const atr = parseFloat((result.rows[0] as any).atr)
-  return isNaN(atr) ? null : atr
 }
 
 /**
@@ -153,7 +108,7 @@ export async function openTrade(
     SELECT
       r.id, r.watchlist_id, r.signal_direction, r.signal_strength,
       r.short_term_expected_change, r.event_date, r.event_type,
-      r.model_source, r.ml_prob_up_5d, r.ml_expected_change_5d,
+      r.model_source, r.ml_prob_up_4w, r.ml_prob_alpha_4w,
       sw.ticker, sw.sector
     FROM stock_recommendations r
     JOIN stock_watchlist sw ON sw.id = r.watchlist_id
@@ -195,15 +150,18 @@ export async function openTrade(
   const atr = await getATR(parseInt(rec.watchlist_id))
   const stopDistance = atr ? atr * 2 : currentPrice * 0.05 // 2x ATR or 5% fallback
 
-  // Position sizing: risk 2% of capital
+  // Position sizing: risk 2% of capital, capped at 30% of capital
   const riskAmount = capital * RISK_PER_TRADE
-  const shares = Math.floor(riskAmount / stopDistance)
+  let shares = Math.floor(riskAmount / stopDistance)
+  if (shares < 1) return { opened: false, reason: 'Position too small' }
+
+  const maxPositionSize = capital * 0.3
+  if (shares * currentPrice > maxPositionSize) {
+    shares = Math.floor(maxPositionSize / currentPrice)
+  }
   if (shares < 1) return { opened: false, reason: 'Position too small' }
 
   const positionSize = shares * currentPrice
-  if (positionSize > capital * 0.3) {
-    return { opened: false, reason: 'Position would exceed 30% of capital' }
-  }
 
   // Stop loss and take profit
   let stopLoss: number
@@ -222,7 +180,10 @@ export async function openTrade(
     signalStrength: parseFloat(rec.signal_strength),
     eventType: rec.event_type,
     modelSource: rec.model_source || 'heuristic',
-    mlProbUp5d: rec.ml_prob_up_5d ? parseFloat(rec.ml_prob_up_5d) : null,
+    // The 4-week probabilities are the ones the models actually produce; the 5d
+    // columns were never written after the 5d models were dropped in June.
+    mlProbUp4w: rec.ml_prob_up_4w != null ? parseFloat(rec.ml_prob_up_4w) : null,
+    mlProbAlpha4w: rec.ml_prob_alpha_4w != null ? parseFloat(rec.ml_prob_alpha_4w) : null,
     atr: atr,
   }
 
@@ -559,9 +520,19 @@ export async function getPerformanceMetrics(portfolioId: number): Promise<{
 export async function processNewSignals(
   portfolioId: number,
   strategy: string
-): Promise<{ opened: number; skipped: number }> {
+): Promise<{ opened: number; skipped: number; blocked?: string }> {
   // Get unprocessed recommendations based on strategy
   const sourceFilter = strategy === 'ml_model' ? 'ml_model' : 'heuristic'
+
+  // A model publishes signals to build a track record; it opens positions only
+  // once that record shows skill. The gate is derived from the live outcomes by
+  // ml/evaluate.py, and it fails closed when no evaluation exists.
+  const gate = isTradeable(sourceFilter)
+  if (!gate.tradeable) {
+    console.log(`[PaperTrading] ${strategy}: no new positions — ${gate.reason}. ` +
+                'Open positions continue to be managed.')
+    return { opened: 0, skipped: 0, blocked: gate.reason }
+  }
 
   // ML uses |prob-0.5|*2 as strength, so 0.60 probability = 0.20 strength.
   // Heuristic uses a composite score centered around 0.5, so 0.55 is meaningful.

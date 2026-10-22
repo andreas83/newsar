@@ -33,7 +33,7 @@ function formatRelativeDate(date: string | Date | null) {
   const days = Math.floor(hours / 24)
   if (days === 1) return 'Yesterday'
   if (days < 7) return `${days}d ago`
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
 }
 
 function getSentimentColor(sentiment: number | null) {
