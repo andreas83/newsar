@@ -20,21 +20,18 @@
         <span :class="{ 'legend-strikethrough': isTypeHidden(type as string) }">{{ label }}</span>
       </div>
       <div class="legend-divider"></div>
+      <div class="legend-hint" style="margin-top: 0; margin-bottom: 2px;">When a node is focused:</div>
       <div class="legend-row">
-        <span class="legend-line" style="background: #22c55e"></span> Similar sentiment
+        <span class="legend-line" :style="{ background: SENTIMENT_SIMILAR }"></span> Similar tone
       </div>
       <div class="legend-row">
-        <span class="legend-line" style="background: #ef4444"></span> Different sentiment
-      </div>
-      <div class="legend-row">
-        <span class="legend-line" style="background: #cbd5e1"></span> Neutral
+        <span class="legend-line" :style="{ background: SENTIMENT_OPPOSED }"></span> Opposed tone
       </div>
       <div class="legend-hint">
-        Node size = trending score<br>
-        Edge numbers = shared articles<br>
-        Hover node to highlight neighbors<br>
-        Click node to pin highlight<br>
-        Double-click to view details
+        Node size = how connected<br>
+        Line width = shared articles<br>
+        Click node to focus<br>
+        Double-click to open
       </div>
     </div>
 
@@ -67,36 +64,29 @@
             :alt="tooltip.data.name"
             class="tooltip-image"
           />
-          <div>
-            <div class="flex items-center gap-1.5">
-              <Badge :color="getEntityColor(tooltip.data.type)">{{ tooltip.data.type }}</Badge>
-              <span class="tooltip-name">{{ tooltip.data.name }}</span>
+          <div class="min-w-0">
+            <div v-if="tooltip.data.type !== 'edge'" class="tooltip-type">
+              <span class="tooltip-type-dot" :style="{ background: entityColors[tooltip.data.type] || '#6b7280' }"></span>
+              {{ entityTypeLabels[tooltip.data.type] || tooltip.data.type }}
             </div>
+            <div class="tooltip-name">{{ tooltip.data.name }}</div>
             <div v-if="tooltip.data.shortDescription" class="tooltip-description">
               {{ tooltip.data.shortDescription.length > 120 ? tooltip.data.shortDescription.slice(0, 120) + '...' : tooltip.data.shortDescription }}
             </div>
           </div>
         </div>
-        <div v-if="tooltip.data.trendingScore !== undefined" class="tooltip-meta">
-          Trending: {{ (tooltip.data.trendingScore * 100).toFixed(1) }}%
-        </div>
         <div v-if="tooltip.data.connectionCount !== undefined" class="tooltip-meta">
-          Connections: {{ tooltip.data.connectionCount }}
+          {{ tooltip.data.connectionCount }} connection{{ tooltip.data.connectionCount !== 1 ? 's' : '' }} in view
         </div>
         <div v-if="tooltip.data.weight !== undefined" class="tooltip-meta">
-          Strength: {{ tooltip.data.weight }}
+          {{ tooltip.data.weight }}
         </div>
         <div v-if="tooltip.data.sentiment" class="tooltip-meta">
           {{ tooltip.data.sentiment }}
         </div>
-        <a
-          v-if="tooltip.data.type && tooltip.data.type !== 'edge' && tooltip.data.slug"
-          class="tooltip-link"
-          :href="`/${tooltip.data.type}/${tooltip.data.slug}`"
-          @click.prevent="navigateTo(`/${tooltip.data.type}/${tooltip.data.slug}`)"
-        >
-          Go to entity &rarr;
-        </a>
+        <div v-if="tooltip.data.type !== 'edge'" class="tooltip-hint">
+          Click to focus &middot; double-click to open
+        </div>
       </div>
     </div>
   </div>
@@ -134,6 +124,18 @@ export interface GraphData {
   edges: GraphEdge[]
 }
 
+export interface NetworkConnection {
+  node: GraphNode
+  cooccurrenceCount: number
+  weight: number
+  sentimentCorrelation: number | null
+}
+
+export interface NetworkSelection {
+  node: GraphNode
+  connections: NetworkConnection[]
+}
+
 export type LayoutStrategy = 'force' | 'radial' | 'hierarchical'
 
 const props = defineProps<{
@@ -152,6 +154,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   nodeClick: [node: GraphNode]
+  nodeSelect: [selection: NetworkSelection | null]
   edgeClick: [edge: GraphEdge]
   'update:visibleStats': [stats: { visibleNodes: number; visibleEdges: number }]
 }>()
@@ -169,27 +172,37 @@ let simulation: d3.Simulation<GraphNode, GraphEdge> | null = null
 let svg: d3.Selection<SVGSVGElement, unknown, null, undefined> | null = null
 let zoom: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null
 
-// Module-scope D3 selections (prerequisite refactor)
+// Module-scope D3 selections
 let linkSelection: d3.Selection<SVGLineElement, GraphEdge, SVGGElement, unknown> | null = null
+let labelLayer: d3.Selection<SVGGElement, unknown, null, undefined> | null = null
 let nodeSelection: d3.Selection<SVGGElement, GraphNode, SVGGElement, unknown> | null = null
 let linkLabelSelection: d3.Selection<SVGTextElement, GraphEdge, SVGGElement, unknown> | null = null
 let nodeLabels: d3.Selection<SVGTextElement, GraphNode, SVGGElement, unknown> | null = null
 let allEdges: GraphEdge[] = []
 let allNodes: GraphNode[] = []
-let gSelection: d3.Selection<SVGGElement, unknown, null, undefined> | null = null
 
-// Ego network highlighting state
+// Graph indexes, rebuilt on every init
+let nodeById = new Map<number, GraphNode>()
+let importance = new Map<number, number>()  // 0..1, how connected a node is
+let maxCooccurrence = 1
+let visibleNodeIds = new Set<number>()
+
+// Focus state: a pinned node (click) wins over a hover preview
 const pinnedEgoNodeId = ref<number | null>(null)
-const activeEgoNodeId = ref<number | null>(null)
-const neighborSet = ref<Set<number>>(new Set())
+const hoverNodeId = ref<number | null>(null)
+let searchMatchIds: Set<number> | null = null
+let lastPinAt = 0
+let hoverTimer: ReturnType<typeof setTimeout> | null = null
 
 // Shared filter state — same ref used by parent page
 const { hiddenEntityTypes, isTypeHidden, toggleEntityType: toggleType } = useNetworkFilters()
 const hiddenTypes = computed(() => new Set(hiddenEntityTypes.value))
 
-// Label collision state
+// Zoom state
 let currentZoomScale = 1.0
 let currentTransform: d3.ZoomTransform = d3.zoomIdentity
+let userMovedView = false
+let hasAutoFitted = false
 
 // Minimap throttle
 let minimapTimer: ReturnType<typeof setTimeout> | null = null
@@ -211,35 +224,78 @@ const entityTypeLabels: Record<string, string> = {
   topic: 'Topic',
 }
 
-function getEntityColor(type: string): 'blue' | 'green' | 'orange' | 'purple' | 'teal' {
-  const colorMap: Record<string, 'blue' | 'green' | 'orange' | 'purple' | 'teal'> = {
-    person: 'blue',
-    organization: 'green',
-    location: 'orange',
-    event: 'purple',
-    topic: 'teal',
-  }
-  return colorMap[type] || 'blue'
+// Sentiment colors only appear on focused edges, so the resting graph stays calm
+const SENTIMENT_SIMILAR = '#16a34a'
+const SENTIMENT_OPPOSED = '#dc2626'
+
+// Label metrics in screen pixels (labels are counter-scaled against zoom)
+const LABEL_FONT_PX = 11
+const LABEL_CHAR_PX = 6.2
+
+function idOf(end: number | GraphNode): number {
+  return typeof end === 'number' ? end : end.id
 }
 
 function getNodeSize(node: GraphNode): number {
   const minSize = props.minNodeSize || 4
   const maxSize = props.maxNodeSize || 20
+  const size = minSize + (importance.get(node.id) ?? 0) * (maxSize - minSize)
+  if (props.highlightNodeId != null && node.id === props.highlightNodeId) return Math.max(size, maxSize)
+  return size
+}
 
-  // Size based on trending score
-  const size = minSize + (node.trendingScore * (maxSize - minSize))
-  return Math.max(minSize, Math.min(maxSize, size))
+/**
+ * Size by connectedness, not trending score: almost all entities have a
+ * trending score of 0, which made every node the same size. Score is the sum
+ * of sqrt(shared articles) over a node's edges, log-scaled so one hub does not
+ * flatten everything else to the minimum size.
+ */
+function computeImportance(nodes: GraphNode[], edges: GraphEdge[]) {
+  const score = new Map<number, number>()
+  maxCooccurrence = 1
+  for (const e of edges) {
+    const s = Math.sqrt(Math.max(1, e.cooccurrenceCount))
+    const sId = idOf(e.source)
+    const tId = idOf(e.target)
+    score.set(sId, (score.get(sId) || 0) + s)
+    score.set(tId, (score.get(tId) || 0) + s)
+    if (e.cooccurrenceCount > maxCooccurrence) maxCooccurrence = e.cooccurrenceCount
+  }
+  const maxScore = Math.max(1, ...score.values())
+  importance = new Map()
+  for (const n of nodes) {
+    const connected = Math.log1p(score.get(n.id) || 0) / Math.log1p(maxScore)
+    // Trending breaks ties between equally connected nodes
+    importance.set(n.id, Math.min(1, connected * 0.85 + (n.trendingScore || 0) * 0.15))
+  }
+}
+
+function isEdgeVisible(d: GraphEdge): boolean {
+  const hidden = hiddenTypes.value
+  const s = nodeById.get(idOf(d.source))
+  const t = nodeById.get(idOf(d.target))
+  if (!s || !t) return false
+  if (hidden.has(s.type) || hidden.has(t.type)) return false
+  return d.cooccurrenceCount >= (props.minCooccurrence ?? 1)
+}
+
+function viewportSize() {
+  return {
+    width: props.width || graphContainer.value?.clientWidth || 800,
+    height: props.height || graphContainer.value?.clientHeight || 600,
+  }
 }
 
 // --- Exposed Methods ---
 
-function fitToView() {
+function fitToView(duration = 500) {
   if (!svg || !zoom || !allNodes.length) return
-  const width = props.width || graphContainer.value?.clientWidth || 800
-  const height = props.height || graphContainer.value?.clientHeight || 600
+  const { width, height } = viewportSize()
 
-  const hidden = hiddenTypes.value
-  const visibleNodes = allNodes.filter(n => !hidden.has(n.type) && n.x !== undefined && n.y !== undefined)
+  const visibleNodes = allNodes.filter(n =>
+    n.x !== undefined && n.y !== undefined &&
+    (visibleNodeIds.size === 0 || visibleNodeIds.has(n.id)),
+  )
   if (!visibleNodes.length) return
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -251,19 +307,26 @@ function fitToView() {
     if (n.y! + r > maxY) maxY = n.y! + r
   }
 
-  const padding = 40
-  const bw = maxX - minX + padding * 2
-  const bh = maxY - minY + padding * 2
-  const scale = Math.min(width / bw, height / bh, 2)
+  // Extra room at the bottom for labels and at the top for the floating toolbar
+  const padX = 48
+  const padTop = 64
+  const padBottom = 48
+  const bw = maxX - minX
+  const bh = maxY - minY
+  const scale = Math.max(0.1, Math.min((width - padX * 2) / bw, (height - padTop - padBottom) / bh, 1.3))
   const cx = (minX + maxX) / 2
   const cy = (minY + maxY) / 2
 
   const transform = d3.zoomIdentity
-    .translate(width / 2, height / 2)
+    .translate(width / 2, padTop + (height - padTop - padBottom) / 2)
     .scale(scale)
     .translate(-cx, -cy)
 
-  svg.transition().duration(500).call(zoom.transform, transform)
+  if (duration > 0) {
+    svg.transition().duration(duration).call(zoom.transform, transform)
+  } else {
+    svg.call(zoom.transform, transform)
+  }
 }
 
 function zoomIn() {
@@ -277,99 +340,155 @@ function zoomOut() {
 }
 
 function resetZoom() {
-  if (!svg || !zoom) return
-  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity)
+  fitToView()
 }
 
-defineExpose({ fitToView, zoomIn, zoomOut, resetZoom })
+function panToNode(node: GraphNode, minScale = 1.2) {
+  if (!svg || !zoom || node.x === undefined || node.y === undefined) return
+  const { width, height } = viewportSize()
+  const transform = d3.zoomIdentity
+    .translate(width / 2, height / 2)
+    .scale(Math.max(currentZoomScale, minScale))
+    .translate(-node.x, -node.y)
+  svg.transition().duration(500).call(zoom.transform, transform)
+}
 
-// --- Ego Network Helpers ---
+/** Pin focus on a node (e.g. from a connection list) and bring it into view. */
+function focusNode(id: number, pan = true) {
+  const node = nodeById.get(id)
+  if (!node) return
+  pinnedEgoNodeId.value = id
+  lastPinAt = Date.now()
+  restyle()
+  emitSelection()
+  if (pan) panToNode(node)
+}
 
-function getNeighborIds(nodeId: number, edges: GraphEdge[]): Set<number> {
-  const neighbors = new Set<number>([nodeId])
-  for (const e of edges) {
-    const sourceId = typeof e.source === 'number' ? e.source : (e.source as GraphNode).id
-    const targetId = typeof e.target === 'number' ? e.target : (e.target as GraphNode).id
-    if (sourceId === nodeId) neighbors.add(targetId)
-    if (targetId === nodeId) neighbors.add(sourceId)
+function clearFocus() {
+  if (pinnedEgoNodeId.value === null) return
+  pinnedEgoNodeId.value = null
+  restyle()
+  emitSelection()
+}
+
+defineExpose({ fitToView, zoomIn, zoomOut, resetZoom, focusNode, clearFocus })
+
+// --- Focus / Selection ---
+
+function visibleNeighbors(nodeId: number): Map<number, GraphEdge> {
+  const result = new Map<number, GraphEdge>()
+  for (const e of allEdges) {
+    const sId = idOf(e.source)
+    const tId = idOf(e.target)
+    if (sId !== nodeId && tId !== nodeId) continue
+    if (!isEdgeVisible(e)) continue
+    result.set(sId === nodeId ? tId : sId, e)
   }
-  return neighbors
+  return result
 }
 
-function applyEgoHighlight(nodeId: number | null) {
-  if (!linkSelection || !nodeSelection || !nodeLabels) return
+function emitSelection() {
+  const id = pinnedEgoNodeId.value
+  const node = id !== null ? nodeById.get(id) : undefined
+  if (!node) {
+    emit('nodeSelect', null)
+    return
+  }
+  const connections: NetworkConnection[] = []
+  for (const [neighborId, e] of visibleNeighbors(node.id)) {
+    const neighbor = nodeById.get(neighborId)
+    if (!neighbor) continue
+    connections.push({
+      node: neighbor,
+      cooccurrenceCount: e.cooccurrenceCount,
+      weight: e.weight,
+      sentimentCorrelation: e.sentimentCorrelation,
+    })
+  }
+  connections.sort((a, b) => b.cooccurrenceCount - a.cooccurrenceCount || b.weight - a.weight)
+  emit('nodeSelect', { node, connections })
+}
 
-  if (nodeId !== null) {
-    const nSet = getNeighborIds(nodeId, allEdges)
-    activeEgoNodeId.value = nodeId
-    neighborSet.value = nSet
+function edgeBaseOpacity(d: GraphEdge): number {
+  const ceiling = allNodes.length > 500 ? 0.25 : 0.45
+  return Math.min(ceiling, 0.12 + d.weight * 0.4)
+}
 
-    // Dim non-neighbor nodes
-    nodeSelection.select('circle')
-      .transition().duration(200)
-      .style('opacity', (d: GraphNode) => nSet.has(d.id) ? 1 : 0.1)
-      .attr('stroke', (d: GraphNode) => {
-        if (d.id === nodeId) return '#fbbf24'
-        return '#fff'
-      })
-      .attr('stroke-width', (d: GraphNode) => {
-        if (d.id === nodeId) return 4
-        return 2
-      })
+function edgeWidth(d: GraphEdge): number {
+  return 0.6 + 3.4 * Math.sqrt(d.cooccurrenceCount / maxCooccurrence)
+}
 
-    // Dim non-connecting edges
+function sentimentColor(d: GraphEdge): string {
+  const sc = d.sentimentCorrelation
+  if (sc !== null && sc > 0.3) return SENTIMENT_SIMILAR
+  if (sc !== null && sc < -0.3) return SENTIMENT_OPPOSED
+  return 'var(--color-ink-3, #6b6353)'
+}
+
+function nodeRingColor(d: GraphNode, focusId: number | null): string {
+  if (d.id === focusId) return 'var(--color-accent, #d97706)'
+  if (searchMatchIds?.has(d.id)) return 'var(--color-accent, #d97706)'
+  if (props.highlightNodeId != null && d.id === props.highlightNodeId) return 'var(--color-ink, #17140e)'
+  return 'var(--color-paper, #fff)'
+}
+
+function nodeRingWidth(d: GraphNode, focusId: number | null): number {
+  if (d.id === focusId) return 3.5
+  if (searchMatchIds?.has(d.id)) return 3
+  if (props.highlightNodeId != null && d.id === props.highlightNodeId) return 2.5
+  return 1.5
+}
+
+/** Single place that derives node/edge styling from focus + search state. */
+function restyle() {
+  if (!linkSelection || !nodeSelection) return
+
+  const focusId = pinnedEgoNodeId.value ?? hoverNodeId.value
+  const circles = nodeSelection.select<SVGCircleElement>('circle')
+
+  if (focusId !== null) {
+    const neighbors = visibleNeighbors(focusId)
+
+    circles.transition().duration(150)
+      .style('opacity', (d: GraphNode) => (d.id === focusId || neighbors.has(d.id)) ? 1 : 0.12)
+      .style('stroke', (d: GraphNode) => nodeRingColor(d, focusId))
+      .style('stroke-width', (d: GraphNode) => nodeRingWidth(d, focusId))
+
+    const touches = (d: GraphEdge) => idOf(d.source) === focusId || idOf(d.target) === focusId
     linkSelection
-      .transition().duration(200)
-      .style('opacity', (d: GraphEdge) => {
-        const sourceId = typeof d.source === 'number' ? d.source : (d.source as GraphNode).id
-        const targetId = typeof d.target === 'number' ? d.target : (d.target as GraphNode).id
-        return (sourceId === nodeId || targetId === nodeId) ? 0.6 : 0.05
-      })
+      .style('stroke', (d: GraphEdge) => touches(d) ? sentimentColor(d) : 'var(--color-ink-4, #9a9080)')
+      .transition().duration(150)
+      .style('opacity', (d: GraphEdge) => touches(d) ? 0.9 : 0.04)
 
-    // Dim edge labels
-    if (linkLabelSelection) {
-      linkLabelSelection
-        .transition().duration(200)
-        .style('opacity', (d: GraphEdge) => {
-          const sourceId = typeof d.source === 'number' ? d.source : (d.source as GraphNode).id
-          const targetId = typeof d.target === 'number' ? d.target : (d.target as GraphNode).id
-          return (sourceId === nodeId || targetId === nodeId) ? 1 : 0.05
-        })
-    }
+    linkLabelSelection?.transition().duration(150)
+      .style('opacity', (d: GraphEdge) => touches(d) ? 1 : 0)
+  } else if (searchMatchIds) {
+    circles.transition().duration(150)
+      .style('opacity', (d: GraphNode) => searchMatchIds!.has(d.id) ? 1 : 0.12)
+      .style('stroke', (d: GraphNode) => nodeRingColor(d, null))
+      .style('stroke-width', (d: GraphNode) => nodeRingWidth(d, null))
 
-    // Force-show labels for neighbors during ego highlight
-    nodeLabels
-      .transition().duration(200)
-      .style('opacity', (d: GraphNode) => nSet.has(d.id) ? 1 : 0)
+    linkSelection
+      .style('stroke', 'var(--color-ink-4, #9a9080)')
+      .transition().duration(150)
+      .style('opacity', 0.05)
+
+    linkLabelSelection?.transition().duration(150).style('opacity', 0)
   } else {
-    activeEgoNodeId.value = null
-    neighborSet.value = new Set()
-
-    // Restore nodes
-    nodeSelection.select('circle')
-      .transition().duration(200)
+    circles.transition().duration(150)
       .style('opacity', 1)
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 2)
+      .style('stroke', (d: GraphNode) => nodeRingColor(d, null))
+      .style('stroke-width', (d: GraphNode) => nodeRingWidth(d, null))
 
-    // Restore edges
     linkSelection
-      .transition().duration(200)
-      .style('opacity', (d: GraphEdge) => {
-        const baseOpacity = allNodes.length > 500 ? 0.15 : 0.4
-        return Math.min(baseOpacity, d.weight * 0.6)
-      })
+      .style('stroke', 'var(--color-ink-4, #9a9080)')
+      .transition().duration(150)
+      .style('opacity', edgeBaseOpacity)
 
-    // Restore edge labels
-    if (linkLabelSelection) {
-      linkLabelSelection
-        .transition().duration(200)
-        .style('opacity', 1)
-    }
-
-    // Restore labels via collision system
-    updateLabelVisibility()
+    linkLabelSelection?.transition().duration(150).style('opacity', 0.8)
   }
+
+  updateLabelVisibility()
 }
 
 // --- Unified Visibility (shared by edge-weight filter + legend toggle) ---
@@ -377,143 +496,153 @@ function applyEgoHighlight(nodeId: number | null) {
 function updateVisibility() {
   if (!linkSelection || !nodeSelection) return
 
-  const minCo = props.minCooccurrence ?? 1
   const hidden = hiddenTypes.value
-
-  // Track which nodes have at least one visible edge
   const nodesWithVisibleEdges = new Set<number>()
-
-  // Update edge visibility
-  linkSelection.each(function(d: GraphEdge) {
-    const sourceNode = d.source as GraphNode
-    const targetNode = d.target as GraphNode
-    const sourceId = typeof d.source === 'number' ? d.source : sourceNode.id
-    const targetId = typeof d.target === 'number' ? d.target : targetNode.id
-    const sourceType = typeof d.source === 'number' ? '' : sourceNode.type
-    const targetType = typeof d.target === 'number' ? '' : targetNode.type
-
-    const hiddenByType = hidden.has(sourceType) || hidden.has(targetType)
-    const hiddenByWeight = d.cooccurrenceCount < minCo
-    const isHidden = hiddenByType || hiddenByWeight
-
-    d3.select(this).style('display', isHidden ? 'none' : null)
-
-    if (!isHidden) {
-      nodesWithVisibleEdges.add(sourceId)
-      nodesWithVisibleEdges.add(targetId)
-    }
-  })
-
-  // Update edge label visibility
-  if (linkLabelSelection) {
-    linkLabelSelection.each(function(d: GraphEdge) {
-      const sourceNode = d.source as GraphNode
-      const targetNode = d.target as GraphNode
-      const sourceType = typeof d.source === 'number' ? '' : sourceNode.type
-      const targetType = typeof d.target === 'number' ? '' : targetNode.type
-
-      const hiddenByType = hidden.has(sourceType) || hidden.has(targetType)
-      const hiddenByWeight = d.cooccurrenceCount < minCo
-      d3.select(this).style('display', (hiddenByType || hiddenByWeight) ? 'none' : null)
-    })
-  }
-
-  // Update node visibility: hidden if type is hidden, or orphaned (no visible edges)
-  let visibleNodes = 0
   let visibleEdges = 0
 
-  nodeSelection.each(function(d: GraphNode) {
-    const hiddenByType = hidden.has(d.type)
-    const isOrphan = !hiddenByType && !nodesWithVisibleEdges.has(d.id)
-    const isHidden = hiddenByType || isOrphan
-    d3.select(this).style('display', isHidden ? 'none' : null)
-    if (!isHidden) visibleNodes++
+  linkSelection.style('display', (d: GraphEdge) => {
+    if (!isEdgeVisible(d)) return 'none'
+    nodesWithVisibleEdges.add(idOf(d.source))
+    nodesWithVisibleEdges.add(idOf(d.target))
+    visibleEdges++
+    return null
   })
 
-  // Count visible edges
-  linkSelection.each(function() {
-    if (d3.select(this).style('display') !== 'none') visibleEdges++
-  })
+  linkLabelSelection?.style('display', (d: GraphEdge) => isEdgeVisible(d) ? null : 'none')
 
-  emit('update:visibleStats', { visibleNodes, visibleEdges })
+  // Hidden if type is hidden, or orphaned (no visible edges)
+  visibleNodeIds = new Set()
+  for (const n of allNodes) {
+    if (!hidden.has(n.type) && nodesWithVisibleEdges.has(n.id)) visibleNodeIds.add(n.id)
+  }
+  nodeSelection.style('display', (d: GraphNode) => visibleNodeIds.has(d.id) ? null : 'none')
 
-  // Update labels after visibility change
-  updateLabelVisibility()
+  // Drop focus if the focused node just disappeared
+  const wasPinned = pinnedEgoNodeId.value !== null
+  if (wasPinned && !visibleNodeIds.has(pinnedEgoNodeId.value!)) {
+    pinnedEgoNodeId.value = null
+  }
+
+  emit('update:visibleStats', { visibleNodes: visibleNodeIds.size, visibleEdges })
+
+  restyle()
+  // Connection lists depend on what is visible, so refresh them
+  if (wasPinned) emitSelection()
   scheduleMinimapDraw()
 }
 
-// --- Label Collision Prevention ---
+// --- Label Placement ---
 
+/**
+ * Greedy label placement in screen space. Labels are counter-scaled against
+ * zoom, so a label always reads at ~11px; zooming in therefore frees room and
+ * reveals more names. Priority depends on mode:
+ *  - focus: the focused node, then neighbors by shared articles
+ *  - search: matches only
+ *  - default: most connected first, limited to the viewport
+ */
 function updateLabelVisibility() {
   if (!nodeLabels || !allNodes.length) return
 
-  // If ego highlight is active, that controls labels
-  if (activeEgoNodeId.value !== null) return
+  const k = currentZoomScale
+  const t = currentTransform
+  const { width, height } = viewportSize()
+  const focusId = pinnedEgoNodeId.value ?? hoverNodeId.value
 
-  const zoomScale = currentZoomScale
-  const hidden = hiddenTypes.value
+  let priority: Map<number, number>
+  let budget: number
 
-  // Trending threshold based on zoom: at 1x show top ~10%, at 2x ~30%, at 4x+ show all
-  const trendingThreshold = Math.max(0, 0.4 - zoomScale * 0.15)
-
-  // Collect candidates with positions
-  interface LabelCandidate {
-    node: GraphNode
-    x: number
-    y: number
-    width: number
-    height: number
-    show: boolean
+  if (focusId !== null) {
+    priority = new Map([[focusId, Infinity]])
+    for (const [id, e] of visibleNeighbors(focusId)) priority.set(id, e.cooccurrenceCount)
+    budget = 60
+  } else if (searchMatchIds) {
+    priority = new Map([...searchMatchIds].map(id => [id, importance.get(id) ?? 0]))
+    budget = 60
+  } else {
+    priority = new Map()
+    for (const n of allNodes) {
+      if (visibleNodeIds.has(n.id)) priority.set(n.id, importance.get(n.id) ?? 0)
+    }
+    if (props.highlightNodeId != null) priority.set(props.highlightNodeId, Infinity)
+    budget = Math.max(12, Math.round(28 * Math.sqrt(k)))
   }
 
-  const candidates: LabelCandidate[] = []
-  const placed: LabelCandidate[] = []
+  interface Box { id: number; x: number; y: number; w: number; h: number }
+  const candidates: { node: GraphNode; p: number }[] = []
+  for (const [id, p] of priority) {
+    const n = nodeById.get(id)
+    if (!n || n.x === undefined || n.y === undefined || !visibleNodeIds.has(id)) continue
+    const sx = t.applyX(n.x)
+    const sy = t.applyY(n.y)
+    if (sx < -50 || sx > width + 50 || sy < -50 || sy > height + 50) continue
+    candidates.push({ node: n, p })
+  }
+  candidates.sort((a, b) => b.p - a.p)
 
-  allNodes.forEach(n => {
-    if (hidden.has(n.type)) return
-    if (n.x === undefined || n.y === undefined) return
-    if (n.trendingScore < trendingThreshold) return
+  // Circles of nodes that are currently emphasized act as obstacles
+  const obstacles: Box[] = []
+  for (const n of allNodes) {
+    if (n.x === undefined || n.y === undefined || !visibleNodeIds.has(n.id)) continue
+    if (focusId !== null && !priority.has(n.id)) continue
+    if (searchMatchIds && focusId === null && !searchMatchIds.has(n.id)) continue
+    const r = getNodeSize(n) * k
+    obstacles.push({ id: n.id, x: t.applyX(n.x) - r, y: t.applyY(n.y) - r, w: r * 2, h: r * 2 })
+  }
+  const hits = (box: Box, list: Box[]) => list.some(p =>
+    p.id !== box.id && box.x < p.x + p.w && box.x + box.w > p.x && box.y < p.y + p.h && box.y + box.h > p.y,
+  )
 
-    const textWidth = (n.name.length * 6) / zoomScale
-    const textHeight = 12 / zoomScale
-    candidates.push({
-      node: n,
-      x: n.x - textWidth / 2,
-      y: n.y + getNodeSize(n) + 12 - textHeight / 2,
-      width: textWidth,
-      height: textHeight,
-      show: false,
-    })
-  })
+  type Side = 'below' | 'above' | 'right' | 'left'
+  const SIDES: Side[] = ['below', 'above', 'right', 'left']
+  const placed: Box[] = []
+  const sideOf = new Map<number, Side>()
 
-  // Sort by trending score descending (highest priority first)
-  candidates.sort((a, b) => b.node.trendingScore - a.node.trendingScore)
+  // The few biggest hubs sit inside their own cluster, where every side is
+  // covered by neighbors; let them overlap circles (the halo keeps them legible)
+  const HUB_LABELS = 6
 
-  // Greedy AABB occlusion: place labels one by one
-  for (const c of candidates) {
-    let overlaps = false
-    for (const p of placed) {
-      if (
-        c.x < p.x + p.width &&
-        c.x + c.width > p.x &&
-        c.y < p.y + p.height &&
-        c.y + c.height > p.y
-      ) {
-        overlaps = true
+  for (const [rank, { node, p }] of candidates.entries()) {
+    if (placed.length >= budget) break
+    const isHub = focusId === null && !searchMatchIds && rank < HUB_LABELS
+    const w = node.name.length * LABEL_CHAR_PX + 4
+    const h = LABEL_FONT_PX + 3
+    const cx = t.applyX(node.x!)
+    const cy = t.applyY(node.y!)
+    const r = getNodeSize(node) * k
+
+    // Cartographic placement: first free spot around the node wins
+    for (const side of SIDES) {
+      const box: Box = side === 'below' ? { id: node.id, x: cx - w / 2, y: cy + r + 2, w, h }
+        : side === 'above' ? { id: node.id, x: cx - w / 2, y: cy - r - 2 - h, w, h }
+          : side === 'right' ? { id: node.id, x: cx + r + 3, y: cy - h / 2, w, h }
+            : { id: node.id, x: cx - r - 3 - w, y: cy - h / 2, w, h }
+      // The focused/center node is always labelled
+      const free = !hits(box, placed) && (isHub || !hits(box, obstacles))
+      if ((p === Infinity && side === 'below') || free) {
+        placed.push(box)
+        sideOf.set(node.id, side)
         break
       }
     }
-    if (!overlaps) {
-      c.show = true
-      placed.push(c)
-    }
   }
 
-  // Build lookup of which nodes to show
-  const showSet = new Set(placed.map(c => c.node.id))
-
   nodeLabels
-    .style('opacity', (d: GraphNode) => showSet.has(d.id) ? 1 : 0)
+    .style('opacity', (d: GraphNode) => sideOf.has(d.id) ? 1 : 0)
+    .classed('node-label-strong', (d: GraphNode) =>
+      d.id === focusId || (props.highlightNodeId != null && d.id === props.highlightNodeId),
+    )
+    .each(function (d: GraphNode) {
+      const side = sideOf.get(d.id)
+      if (!side) return
+      const r = getNodeSize(d)
+      const gap = 3 / k
+      const el = d3.select(this)
+      if (side === 'below') el.attr('x', 0).attr('y', r).attr('dy', '1.05em').attr('text-anchor', 'middle')
+      else if (side === 'above') el.attr('x', 0).attr('y', -r - gap).attr('dy', '-0.3em').attr('text-anchor', 'middle')
+      else if (side === 'right') el.attr('x', r + gap).attr('y', 0).attr('dy', '0.35em').attr('text-anchor', 'start')
+      else el.attr('x', -r - gap).attr('y', 0).attr('dy', '0.35em').attr('text-anchor', 'end')
+    })
 }
 
 // --- Minimap ---
@@ -527,6 +656,22 @@ function scheduleMinimapDraw() {
   }, 500)
 }
 
+function minimapBounds() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const n of allNodes) {
+    if (!visibleNodeIds.has(n.id) || n.x === undefined || n.y === undefined) continue
+    if (n.x < minX) minX = n.x
+    if (n.y < minY) minY = n.y
+    if (n.x > maxX) maxX = n.x
+    if (n.y > maxY) maxY = n.y
+  }
+  if (minX === Infinity) return null
+  const padding = 20
+  minX -= padding; minY -= padding
+  maxX += padding; maxY += padding
+  return { minX, minY, bw: maxX - minX || 1, bh: maxY - minY || 1 }
+}
+
 function drawMinimap() {
   const canvas = minimapCanvas.value
   if (!canvas || !allNodes.length) return
@@ -535,49 +680,30 @@ function drawMinimap() {
 
   const w = canvas.width
   const h = canvas.height
-  const hidden = hiddenTypes.value
-
-  // Compute bounding box of all nodes
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const n of allNodes) {
-    if (hidden.has(n.type) || n.x === undefined || n.y === undefined) continue
-    if (n.x < minX) minX = n.x
-    if (n.y < minY) minY = n.y
-    if (n.x > maxX) maxX = n.x
-    if (n.y > maxY) maxY = n.y
-  }
-
-  if (minX === Infinity) return
-
-  const padding = 20
-  minX -= padding; minY -= padding
-  maxX += padding; maxY += padding
-  const bw = maxX - minX || 1
-  const bh = maxY - minY || 1
+  const bounds = minimapBounds()
+  if (!bounds) return
+  const { minX, minY, bw, bh } = bounds
   const scale = Math.min(w / bw, h / bh)
 
   const isDark = document.documentElement.classList.contains('dark')
   ctx.clearRect(0, 0, w, h)
-  ctx.fillStyle = isDark ? 'rgba(15,23,42,0.6)' : 'rgba(248,250,252,0.6)'
+  ctx.fillStyle = isDark ? 'rgba(18,18,18,0.6)' : 'rgba(247,245,239,0.6)'
   ctx.fillRect(0, 0, w, h)
 
-  // Draw nodes as dots
+  const focusId = pinnedEgoNodeId.value
   for (const n of allNodes) {
-    if (hidden.has(n.type) || n.x === undefined || n.y === undefined) continue
+    if (!visibleNodeIds.has(n.id) || n.x === undefined || n.y === undefined) continue
     const mx = (n.x - minX) * scale
     const my = (n.y - minY) * scale
     ctx.fillStyle = entityColors[n.type] || '#6b7280'
     ctx.beginPath()
-    ctx.arc(mx, my, 2, 0, Math.PI * 2)
+    ctx.arc(mx, my, n.id === focusId ? 4 : 2, 0, Math.PI * 2)
     ctx.fill()
   }
 
-  // Draw viewport rectangle
+  // Viewport rectangle
   if (svg && graphContainer.value) {
-    const svgW = props.width || graphContainer.value.clientWidth
-    const svgH = props.height || graphContainer.value.clientHeight
-
-    // Current viewport in graph coordinates
+    const { width: svgW, height: svgH } = viewportSize()
     const t = currentTransform
     const vx1 = (0 - t.x) / t.k
     const vy1 = (0 - t.y) / t.k
@@ -589,10 +715,10 @@ function drawMinimap() {
     const rw = (vx2 - vx1) * scale
     const rh = (vy2 - vy1) * scale
 
-    ctx.strokeStyle = isDark ? 'rgba(147,197,253,0.6)' : 'rgba(59,130,246,0.5)'
+    ctx.strokeStyle = isDark ? 'rgba(245,158,11,0.7)' : 'rgba(217,119,6,0.6)'
     ctx.lineWidth = 1.5
     ctx.strokeRect(rx, ry, rw, rh)
-    ctx.fillStyle = isDark ? 'rgba(147,197,253,0.08)' : 'rgba(59,130,246,0.06)'
+    ctx.fillStyle = isDark ? 'rgba(245,158,11,0.08)' : 'rgba(217,119,6,0.06)'
     ctx.fillRect(rx, ry, rw, rh)
   }
 }
@@ -602,36 +728,16 @@ function onMinimapClick(event: MouseEvent) {
 
   const canvas = minimapCanvas.value
   const rect = canvas.getBoundingClientRect()
-  const mx = event.clientX - rect.left
-  const my = event.clientY - rect.top
-  const w = canvas.width
-  const h = canvas.height
-  const hidden = hiddenTypes.value
-
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const n of allNodes) {
-    if (hidden.has(n.type) || n.x === undefined || n.y === undefined) continue
-    if (n.x < minX) minX = n.x
-    if (n.y < minY) minY = n.y
-    if (n.x > maxX) maxX = n.x
-    if (n.y > maxY) maxY = n.y
-  }
-  if (minX === Infinity) return
-
-  const padding = 20
-  minX -= padding; minY -= padding
-  maxX += padding; maxY += padding
-  const bw = maxX - minX || 1
-  const bh = maxY - minY || 1
-  const scale = Math.min(w / bw, h / bh)
+  const bounds = minimapBounds()
+  if (!bounds) return
+  const { minX, minY, bw, bh } = bounds
+  const scale = Math.min(canvas.width / bw, canvas.height / bh)
 
   // Convert minimap click to graph coordinates
-  const gx = mx / scale + minX
-  const gy = my / scale + minY
+  const gx = (event.clientX - rect.left) / scale + minX
+  const gy = (event.clientY - rect.top) / scale + minY
 
-  const svgW = props.width || graphContainer.value?.clientWidth || 800
-  const svgH = props.height || graphContainer.value?.clientHeight || 600
-
+  const { width: svgW, height: svgH } = viewportSize()
   const transform = d3.zoomIdentity
     .translate(svgW / 2, svgH / 2)
     .scale(currentTransform.k)
@@ -642,67 +748,40 @@ function onMinimapClick(event: MouseEvent) {
 
 // --- Search Highlight ---
 
-function applySearchHighlight(query: string | null) {
-  if (!nodeSelection || !nodeLabels || !linkSelection) return
+function applySearchHighlight(query: string | null, pan = true) {
+  if (!nodeSelection) return
 
-  if (!query || !query.trim()) {
-    // Clear: restore from ego or default state
-    if (pinnedEgoNodeId.value !== null) {
-      applyEgoHighlight(pinnedEgoNodeId.value)
-    } else {
-      applyEgoHighlight(null)
-    }
+  searchMatchIds = null
+  const q = query?.trim().toLowerCase()
+  if (!q) {
+    restyle()
     return
   }
 
-  const q = query.toLowerCase()
-  const matches = allNodes.filter(n => n.name.toLowerCase().includes(q))
-
-  if (matches.length === 0) return
+  const matches = allNodes.filter(n => visibleNodeIds.has(n.id) && n.name.toLowerCase().includes(q))
+  if (matches.length === 0) {
+    restyle()
+    return
+  }
 
   if (matches.length === 1) {
-    // Single match: ego-highlight + pan to node
-    const match = matches[0]
-    pinnedEgoNodeId.value = match.id
-    applyEgoHighlight(match.id)
-
-    // Pan to node
-    if (svg && zoom && match.x !== undefined && match.y !== undefined) {
-      const svgW = props.width || graphContainer.value?.clientWidth || 800
-      const svgH = props.height || graphContainer.value?.clientHeight || 600
-
-      const transform = d3.zoomIdentity
-        .translate(svgW / 2, svgH / 2)
-        .scale(Math.max(currentZoomScale, 1.5))
-        .translate(-match.x, -match.y)
-
-      svg.transition().duration(500).call(zoom.transform, transform)
-    }
-  } else {
-    // Multiple matches: dim non-matching nodes
-    const matchIds = new Set(matches.map(m => m.id))
-    activeEgoNodeId.value = null
-
-    nodeSelection.select('circle')
-      .transition().duration(200)
-      .style('opacity', (d: GraphNode) => matchIds.has(d.id) ? 1 : 0.1)
-      .attr('stroke', (d: GraphNode) => matchIds.has(d.id) ? '#fbbf24' : '#fff')
-      .attr('stroke-width', (d: GraphNode) => matchIds.has(d.id) ? 3 : 2)
-
-    linkSelection
-      .transition().duration(200)
-      .style('opacity', 0.05)
-
-    if (linkLabelSelection) {
-      linkLabelSelection
-        .transition().duration(200)
-        .style('opacity', 0.05)
-    }
-
-    nodeLabels
-      .transition().duration(200)
-      .style('opacity', (d: GraphNode) => matchIds.has(d.id) ? 1 : 0)
+    focusNode(matches[0].id, pan)
+    return
   }
+
+  // Exact name match beats substring matches ("Iran" vs "Iranian Army")
+  const exact = matches.find(n => n.name.toLowerCase() === q)
+  if (exact) {
+    focusNode(exact.id, pan)
+    return
+  }
+
+  searchMatchIds = new Set(matches.map(m => m.id))
+  if (pinnedEgoNodeId.value !== null) {
+    pinnedEgoNodeId.value = null
+    emitSelection()
+  }
+  restyle()
 }
 
 function computeInitialPositions(
@@ -759,8 +838,8 @@ function computeInitialPositions(
       adjacency.set(n.id, new Map())
     }
     for (const e of edges) {
-      const sId = typeof e.source === 'number' ? e.source : (e.source as GraphNode).id
-      const tId = typeof e.target === 'number' ? e.target : (e.target as GraphNode).id
+      const sId = idOf(e.source)
+      const tId = idOf(e.target)
       connectionCounts.set(sId, (connectionCounts.get(sId) || 0) + 1)
       connectionCounts.set(tId, (connectionCounts.get(tId) || 0) + 1)
       const adj = adjacency.get(sId)!
@@ -823,10 +902,14 @@ function computeInitialPositions(
       }
     })
   } else {
-    // 'force' layout: random positions
-    nodes.forEach((node) => {
-      node.x = Math.random() * width
-      node.y = Math.random() * height
+    // 'force' layout: deterministic phyllotaxis, most connected nodes in the
+    // middle. Same data → same picture, so the map is learnable across visits.
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5))
+    const ordered = [...nodes].sort((a, b) => (importance.get(b.id) ?? 0) - (importance.get(a.id) ?? 0))
+    ordered.forEach((node, i) => {
+      const r = 12 * Math.sqrt(i + 0.5)
+      node.x = cx + r * Math.cos(i * goldenAngle)
+      node.y = cy + r * Math.sin(i * goldenAngle)
     })
   }
 }
@@ -834,8 +917,7 @@ function computeInitialPositions(
 function initGraph() {
   if (!graphContainer.value || !props.data) return
 
-  const width = props.width || graphContainer.value.clientWidth
-  const height = props.height || graphContainer.value.clientHeight
+  const { width, height } = viewportSize()
 
   // Clear existing SVG and stop previous simulation FIRST
   if (simulation) {
@@ -844,21 +926,26 @@ function initGraph() {
   }
   d3.select(graphContainer.value).selectAll('*').remove()
 
-  // Reset module-scope selections
   linkSelection = null
+  labelLayer = null
   nodeSelection = null
   linkLabelSelection = null
   nodeLabels = null
+  searchMatchIds = null
+  hoverNodeId.value = null
+  userMovedView = false
+  hasAutoFitted = false
 
   // Make a shallow copy of nodes to avoid mutating props
   const nodes = props.data.nodes.map(n => ({ ...n }))
   const edges = props.data.edges.map(e => ({ ...e }))
 
-  // Store as module-scope references
   allNodes = nodes
   allEdges = edges
+  nodeById = new Map(nodes.map(n => [n.id, n]))
+  visibleNodeIds = new Set(nodes.map(n => n.id))
+  computeImportance(nodes, edges)
 
-  // Compute initial positions based on layout strategy
   const layout = props.layout || 'force'
   computeInitialPositions(nodes, edges, width, height, layout)
   nodes.forEach((node) => {
@@ -866,7 +953,13 @@ function initGraph() {
     node.fy = null
   })
 
-  // Create SVG
+  // Ego networks: anchor the center entity in the middle of the force layout
+  const centerNode = props.highlightNodeId != null ? nodeById.get(props.highlightNodeId) : undefined
+  if (centerNode && layout === 'force') {
+    centerNode.x = centerNode.fx = width / 2
+    centerNode.y = centerNode.fy = height / 2
+  }
+
   svg = d3.select(graphContainer.value)
     .append('svg')
     .attr('width', width)
@@ -874,41 +967,46 @@ function initGraph() {
     .attr('class', 'network-svg')
 
   const g = svg.append('g')
-  gSelection = g
 
-  // Setup zoom
   currentZoomScale = 1.0
   currentTransform = d3.zoomIdentity
   let lastLabelZoomScale = 1.0
+  let lastLabelTransform = d3.zoomIdentity
 
   zoom = d3.zoom<SVGSVGElement, unknown>()
-    .scaleExtent([0.1, 10])
+    .scaleExtent([0.1, 8])
     .on('zoom', (event) => {
       g.attr('transform', event.transform)
       currentZoomScale = event.transform.k
       currentTransform = event.transform
+      if (event.sourceEvent) userMovedView = true
 
-      // Update labels if zoom changed significantly
-      if (Math.abs(currentZoomScale - lastLabelZoomScale) > 0.1) {
+      // Keep labels a constant screen size
+      labelLayer?.style('--inv-k', String(1 / event.transform.k))
+
+      // Re-place labels when zoom or pan moved enough to change what fits
+      const panned = Math.abs(event.transform.x - lastLabelTransform.x) + Math.abs(event.transform.y - lastLabelTransform.y)
+      if (Math.abs(currentZoomScale - lastLabelZoomScale) / lastLabelZoomScale > 0.08 || panned > 80) {
         lastLabelZoomScale = currentZoomScale
+        lastLabelTransform = event.transform
         updateLabelVisibility()
       }
 
       scheduleMinimapDraw()
     })
+    .on('end', () => {
+      lastLabelZoomScale = currentZoomScale
+      lastLabelTransform = currentTransform
+      updateLabelVisibility()
+    })
 
-  svg.call(zoom)
+  svg.call(zoom).on('dblclick.zoom', null)
 
-  // Click on SVG background to clear ego pin
+  // Click on empty canvas clears focus
   svg.on('click', (event: any) => {
-    // Only if clicking the SVG itself (not a node)
-    if (event.target.tagName === 'svg' || event.target.tagName === 'rect') {
-      pinnedEgoNodeId.value = null
-      applyEgoHighlight(null)
-    }
+    if (event.target.tagName === 'svg') clearFocus()
   })
 
-  // Create links
   linkSelection = g.append('g')
     .attr('class', 'links')
     .selectAll('line')
@@ -916,74 +1014,49 @@ function initGraph() {
     .enter()
     .append('line')
     .attr('class', 'edge')
-    .attr('stroke', (d: GraphEdge) => {
-      const isDark = document.documentElement.classList.contains('dark')
-      const sc = d.sentimentCorrelation
-      if (sc !== null && sc > 0.3) return isDark ? '#4ade80' : '#22c55e' // green
-      if (sc !== null && sc < -0.3) return isDark ? '#f87171' : '#ef4444' // red
-      return isDark ? '#64748b' : '#cbd5e1' // neutral gray
-    })
-    .attr('stroke-opacity', (d: GraphEdge) => {
-      const baseOpacity = nodes.length > 500 ? 0.15 : 0.4
-      return Math.min(baseOpacity, d.weight * 0.6)
-    })
-    .attr('stroke-width', (d: GraphEdge) => {
-      return Math.max(0.5, d.weight * 3)
-    })
+    .style('stroke', 'var(--color-ink-4, #9a9080)')
+    .style('opacity', edgeBaseOpacity)
+    .attr('stroke-width', edgeWidth)
+    .attr('stroke-linecap', 'round')
     .on('click', (_event: any, d: GraphEdge) => {
       emit('edgeClick', d)
     })
     .on('mouseover', function(event: any, d: GraphEdge) {
-      d3.select(this)
-        .attr('stroke', '#1e293b')
-        .attr('stroke-opacity', 1)
+      d3.select(this).attr('stroke-width', edgeWidth(d) + 2)
 
-      const sourceName = typeof d.source === 'object' ? (d.source as GraphNode).name : '?'
-      const targetName = typeof d.target === 'object' ? (d.target as GraphNode).name : '?'
+      const sourceName = nodeById.get(idOf(d.source))?.name ?? '?'
+      const targetName = nodeById.get(idOf(d.target))?.name ?? '?'
       const sentimentLabel = d.sentimentCorrelation !== null
-        ? (d.sentimentCorrelation > 0.3 ? 'Discussed similarly' : d.sentimentCorrelation < -0.3 ? 'Discussed differently' : 'Neutral sentiment')
+        ? (d.sentimentCorrelation > 0.3 ? 'Covered in a similar tone' : d.sentimentCorrelation < -0.3 ? 'Covered in opposing tones' : 'No clear tone pattern')
         : null
 
       showTooltip(event, {
         type: 'edge',
-        name: `${sourceName} \u2014 ${targetName}`,
-        weight: `${d.cooccurrenceCount} article${d.cooccurrenceCount !== 1 ? 's' : ''} mention both`,
+        name: `${sourceName} — ${targetName}`,
+        weight: `${d.cooccurrenceCount.toLocaleString('en-US')} article${d.cooccurrenceCount !== 1 ? 's' : ''} mention both`,
         sentiment: sentimentLabel,
       })
     })
     .on('mouseout', function(_event: any, d: GraphEdge) {
-      const isDark = document.documentElement.classList.contains('dark')
-      const sc = d.sentimentCorrelation
-      let originalColor = isDark ? '#64748b' : '#cbd5e1'
-      if (sc !== null && sc > 0.3) originalColor = isDark ? '#4ade80' : '#22c55e'
-      else if (sc !== null && sc < -0.3) originalColor = isDark ? '#f87171' : '#ef4444'
-
-      d3.select(this)
-        .attr('stroke', originalColor)
-        .attr('stroke-opacity', 0.6)
-
+      d3.select(this).attr('stroke-width', edgeWidth(d))
       hideTooltip()
     })
 
   // Edge labels (only for small graphs to avoid clutter)
-  const showEdgeLabels = edges.length <= 60
-  if (showEdgeLabels) {
+  if (edges.length <= 60) {
     linkLabelSelection = g.append('g')
       .attr('class', 'edge-labels')
       .selectAll('text')
       .data(edges)
       .enter()
       .append('text')
+      .attr('class', 'edge-label')
       .text((d: GraphEdge) => String(d.cooccurrenceCount))
       .attr('text-anchor', 'middle')
       .attr('dominant-baseline', 'central')
-      .style('font-size', '9px')
-      .style('fill', '#64748b')
-      .style('pointer-events', 'none')
-      .style('user-select', 'none')
+      .style('opacity', 0.8)
   }
 
-  // Create nodes
   nodeSelection = g.append('g')
     .attr('class', 'nodes')
     .selectAll('g')
@@ -996,105 +1069,93 @@ function initGraph() {
       .on('drag', dragged)
       .on('end', dragended) as any)
 
-  // Node circles
   nodeSelection.append('circle')
-    .attr('r', (d: GraphNode) => {
-      if (props.highlightNodeId != null && d.id === props.highlightNodeId) return getNodeSize(d) * 1.5
-      return getNodeSize(d)
-    })
+    .attr('r', (d: GraphNode) => getNodeSize(d))
     .attr('fill', (d: GraphNode) => entityColors[d.type] || entityColors.person)
-    .attr('stroke', (d: GraphNode) => {
-      if (props.highlightNodeId != null && d.id === props.highlightNodeId) return '#fbbf24'
-      return '#fff'
-    })
-    .attr('stroke-width', (d: GraphNode) => {
-      if (props.highlightNodeId != null && d.id === props.highlightNodeId) return 4
-      return 2
-    })
-    .style('opacity', (d: GraphNode) => {
-      if (props.highlightNodeId != null && d.id !== props.highlightNodeId) return 0.6
-      return 1
-    })
+    .style('stroke', (d: GraphNode) => nodeRingColor(d, null))
+    .style('stroke-width', (d: GraphNode) => nodeRingWidth(d, null))
     .style('cursor', 'pointer')
     .on('click', (event: any, d: GraphNode) => {
-      event.stopPropagation() // prevent SVG background click handler
-      // Single click: toggle ego pin only
+      event.stopPropagation() // prevent canvas click handler
+      // The focus panel takes over from the tooltip
+      tooltip.value.visible = false
       if (pinnedEgoNodeId.value === d.id) {
-        pinnedEgoNodeId.value = null
-        applyEgoHighlight(null)
+        // Second click of a double-click must not undo the focus
+        if (Date.now() - lastPinAt < 400) return
+        clearFocus()
       } else {
-        pinnedEgoNodeId.value = d.id
-        applyEgoHighlight(d.id)
+        focusNode(d.id, false)
       }
     })
     .on('dblclick', (event: any, d: GraphNode) => {
       event.stopPropagation()
-      // Double-click: open entity details
       emit('nodeClick', d)
     })
     .on('mouseover', function(event: any, d: GraphNode) {
-      // Ego highlight on hover (if no pinned node)
-      if (pinnedEgoNodeId.value === null) {
-        applyEgoHighlight(d.id)
-      }
+      d3.select(this).attr('r', getNodeSize(d) * 1.25)
 
-      // Enlarge hovered node circle
-      d3.select(this)
-        .attr('r', getNodeSize(d) * 1.5)
+      // Short delay so sweeping the cursor across the graph does not strobe
+      if (hoverTimer) clearTimeout(hoverTimer)
+      if (pinnedEgoNodeId.value === null) {
+        hoverTimer = setTimeout(() => {
+          hoverNodeId.value = d.id
+          restyle()
+        }, 90)
+      }
 
       showTooltip(event, {
         ...d,
-        connectionCount: allEdges.filter(
-          e => (typeof e.source === 'number' ? e.source : (e.source as GraphNode).id) === d.id ||
-               (typeof e.target === 'number' ? e.target : (e.target as GraphNode).id) === d.id
-        ).length
+        connectionCount: visibleNeighbors(d.id).size,
       })
     })
     .on('mouseout', function(_event: any, d: GraphNode) {
-      // Restore ego highlight on mouseout (if no pinned node)
-      if (pinnedEgoNodeId.value === null) {
-        applyEgoHighlight(null)
+      d3.select(this).attr('r', getNodeSize(d))
+      if (hoverTimer) {
+        clearTimeout(hoverTimer)
+        hoverTimer = null
       }
-
-      d3.select(this)
-        .attr('r', getNodeSize(d))
-
+      if (hoverNodeId.value !== null) {
+        hoverNodeId.value = null
+        restyle()
+      }
       hideTooltip()
     })
 
-  // Node labels - start with opacity 0, collision system manages visibility
-  nodeLabels = nodeSelection.append('text')
+  // Node labels live in their own layer above all circles, so a neighbor's
+  // circle never paints over a name. The placement pass decides which show.
+  labelLayer = g.append('g').attr('class', 'labels')
+  nodeLabels = labelLayer
+    .selectAll('text')
+    .data(nodes)
+    .enter()
+    .append('text')
     .text((d: GraphNode) => d.name)
     .attr('x', 0)
-    .attr('y', (d: GraphNode) => getNodeSize(d) + 12)
+    .attr('y', (d: GraphNode) => getNodeSize(d))
+    .attr('dy', '1.05em')
     .attr('text-anchor', 'middle')
     .attr('class', 'node-label')
-    .style('font-size', '10px')
-    .style('fill', '#1e293b')
-    .style('pointer-events', 'none')
-    .style('user-select', 'none')
     .style('opacity', 0)
 
   // --- Force Simulation with layout-aware parameters ---
   const isLargeGraph = nodes.length > 500
   const isMediumGraph = nodes.length > 100 && nodes.length <= 500
 
-  let chargeStrength = isLargeGraph ? -800 : isMediumGraph ? -1500 : -2500
-  let chargeDistanceMax = isLargeGraph ? 600 : isMediumGraph ? 800 : 1000
-  let baseLinkDistance = isLargeGraph ? 180 : isMediumGraph ? 300 : 400
-  let centerStrength = isLargeGraph ? 0.01 : isMediumGraph ? 0.008 : 0.005
-  const collisionPadding = isLargeGraph ? 25 : isMediumGraph ? 35 : 50
+  // Gravity matters: most graphs here are many small disconnected clusters,
+  // and weak centering let them drift far apart (and off-screen).
+  let chargeStrength = isLargeGraph ? -70 : isMediumGraph ? -140 : -260
+  const chargeDistanceMax = isLargeGraph ? 300 : isMediumGraph ? 400 : 600
+  let gravity = isLargeGraph ? 0.08 : isMediumGraph ? 0.07 : 0.05
+  const collisionPadding = isLargeGraph ? 3 : isMediumGraph ? 5 : 8
 
-  // Connection counts for hierarchical layout
-  let connectionCounts: Map<number, number> | null = null
   let hubIds: Set<number> | null = null
 
   if (layout === 'hierarchical') {
-    connectionCounts = new Map<number, number>()
+    const connectionCounts = new Map<number, number>()
     for (const n of nodes) connectionCounts.set(n.id, 0)
     for (const e of edges) {
-      const sId = typeof e.source === 'number' ? e.source : (e.source as GraphNode).id
-      const tId = typeof e.target === 'number' ? e.target : (e.target as GraphNode).id
+      const sId = idOf(e.source)
+      const tId = idOf(e.target)
       connectionCounts.set(sId, (connectionCounts.get(sId) || 0) + 1)
       connectionCounts.set(tId, (connectionCounts.get(tId) || 0) + 1)
     }
@@ -1105,48 +1166,45 @@ function initGraph() {
     hubIds = new Set(sorted.slice(0, hubCount).map(n => n.id))
   }
 
-  // Tune forces per layout
   if (layout === 'radial') {
-    chargeStrength *= 0.15             // Near-zero repulsion to keep rings tight
-    centerStrength *= 0.5              // Weak centering — radial force handles this
+    chargeStrength *= 0.3   // Light repulsion to keep rings tight
+    gravity = 0             // Radial force handles positioning
   } else if (layout === 'hierarchical') {
-    chargeStrength *= 0.3              // Moderate repulsion
-    centerStrength *= 1.5              // Stronger center pull for hubs
+    chargeStrength *= 0.6
+    gravity = 0
   }
 
   simulation = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(edges)
+    .force('link', d3.forceLink<GraphNode, GraphEdge>(edges)
       .id((d: any) => d.id)
       .distance((d: any) => {
         if (layout === 'hierarchical' && hubIds) {
-          const sId = typeof d.source === 'number' ? d.source : d.source.id
-          const tId = typeof d.target === 'number' ? d.target : d.target.id
-          const isHubLink = hubIds.has(sId) && hubIds.has(tId)
-          if (isHubLink) return 100
-          return 250
+          const isHubLink = hubIds.has(d.source.id) && hubIds.has(d.target.id)
+          return isHubLink ? 100 : 250
         }
-        return Math.min(baseLinkDistance, Math.max(80, baseLinkDistance / (d.weight + 0.2)))
+        // Strong ties sit closer; leave room for both circles
+        return getNodeSize(d.source) + getNodeSize(d.target) + 24 + 50 * (1 - Math.min(1, d.weight))
       })
       .strength((d: any) => {
         if (layout === 'radial') return Math.min(0.15, d.weight * 0.1)
-        return Math.min(0.7, d.weight * 0.3)
+        // d3 default: weaker pull on high-degree nodes so hubs do not collapse
+        const degS = degreeOf(d.source.id)
+        const degT = degreeOf(d.target.id)
+        return 1 / Math.min(degS, degT)
       })
     )
     .force('charge', d3.forceManyBody()
       .strength(chargeStrength)
       .distanceMax(chargeDistanceMax)
-      .distanceMin(20)
+      .distanceMin(10)
     )
-    .force('center', d3.forceCenter(width / 2, height / 2).strength(centerStrength))
     .force('collision', d3.forceCollide()
       .radius((d: any) => getNodeSize(d) + collisionPadding)
       .strength(0.9)
       .iterations(2)
     )
 
-  // Layout-specific forces
   if (layout === 'radial') {
-    // Strong radial force — no forceX/forceY (would conflict)
     const typeOrder = ['person', 'organization', 'location', 'event', 'topic']
     const activeTypes = typeOrder.filter(t => nodes.some(n => n.type === t))
     const ringGap = Math.min(width, height) * 0.35 / Math.max(1, activeTypes.length)
@@ -1159,7 +1217,7 @@ function initGraph() {
       height / 2,
     ).strength(0.8))
   } else if (layout === 'hierarchical') {
-    // Custom radial forces: hubs toward center, non-hubs to periphery
+    // Hubs toward center, non-hubs to periphery
     const hubR = Math.min(width, height) * 0.12
     const nonHubR = Math.min(width, height) * 0.38
     simulation.force('radial', d3.forceRadial(
@@ -1167,115 +1225,98 @@ function initGraph() {
       width / 2,
       height / 2,
     ).strength((d: any) => hubIds!.has(d.id) ? 0.6 : 0.2))
-    // No forceX/forceY — radial handles positioning
   } else {
-    // Force layout: gentle centering via forceX/forceY
+    // Elliptical gravity: spread clusters along the longer screen axis
     simulation
-      .force('x', d3.forceX(width / 2).strength(centerStrength))
-      .force('y', d3.forceY(height / 2).strength(centerStrength))
+      .force('x', d3.forceX(width / 2).strength(gravity * Math.sqrt(height / width)))
+      .force('y', d3.forceY(height / 2).strength(gravity * Math.sqrt(width / height)))
   }
 
   simulation
-    .alphaDecay(isLargeGraph ? 0.05 : 0.02)
-    .velocityDecay(isLargeGraph ? 0.5 : 0.3)
+    .alphaDecay(isLargeGraph ? 0.05 : 0.03)
+    .velocityDecay(0.4)
 
-  // --- Warmup phase: run simulation silently to pre-stabilize ---
-  const warmupTicks = isLargeGraph ? 100 : 150
+  // --- Warmup: settle silently so the first frame is already readable ---
+  const warmupTicks = isLargeGraph ? 120 : 220
   simulation.alpha(1).stop()
   for (let i = 0; i < warmupTicks; i++) {
     simulation.tick()
   }
 
-  // Draw dashed ring guides for radial layout
+  // Dashed ring guides for radial layout
   if (layout === 'radial') {
     const typeOrder = ['person', 'organization', 'location', 'event', 'topic']
     const activeTypes = typeOrder.filter(t => nodes.some(n => n.type === t))
     const ringGap = Math.min(width, height) * 0.35 / Math.max(1, activeTypes.length)
     for (let i = 0; i < activeTypes.length; i++) {
-      const radius = ringGap * (i + 1)
       g.insert('circle', ':first-child')
         .attr('cx', width / 2)
         .attr('cy', height / 2)
-        .attr('r', radius)
+        .attr('r', ringGap * (i + 1))
         .attr('fill', 'none')
-        .attr('stroke', document.documentElement.classList.contains('dark') ? '#334155' : '#cbd5e1')
+        .style('stroke', 'var(--color-rule, #cbd5e1)')
         .attr('stroke-dasharray', '4 6')
-        .attr('opacity', 0.25)
+        .attr('opacity', 0.5)
         .attr('class', 'ring-guide')
     }
   }
 
-  // Apply warmup positions to DOM
-  linkSelection!
-    .attr('x1', (d: any) => d.source.x)
-    .attr('y1', (d: any) => d.source.y)
-    .attr('x2', (d: any) => d.target.x)
-    .attr('y2', (d: any) => d.target.y)
+  const renderPositions = () => {
+    linkSelection!
+      .attr('x1', (d: any) => d.source.x)
+      .attr('y1', (d: any) => d.source.y)
+      .attr('x2', (d: any) => d.target.x)
+      .attr('y2', (d: any) => d.target.y)
 
-  if (linkLabelSelection) {
     linkLabelSelection
-      .attr('x', (d: any) => (d.source.x + d.target.x) / 2)
+      ?.attr('x', (d: any) => (d.source.x + d.target.x) / 2)
       .attr('y', (d: any) => (d.source.y + d.target.y) / 2)
+
+    nodeSelection!.attr('transform', (d: GraphNode) => `translate(${d.x},${d.y})`)
+    nodeLabels!.attr('transform', (d: GraphNode) => `translate(${d.x},${d.y})`)
   }
 
-  nodeSelection!.attr('transform', (d: GraphNode) => `translate(${d.x},${d.y})`)
+  renderPositions()
 
-  // Throttle tick updates for gentle remaining settling
-  let tickCount = 0
+  // Frame the settled graph immediately instead of starting at an arbitrary zoom
+  updateVisibility()
+  fitToView(0)
+
+  // Throttled ticks for the remaining gentle settling
   let lastUpdate = Date.now()
   const UPDATE_INTERVAL = 50
 
   simulation.on('tick', () => {
-    tickCount++
     const now = Date.now()
-
-    // Throttle visual updates
     if (now - lastUpdate > UPDATE_INTERVAL || simulation!.alpha() < 0.01) {
       lastUpdate = now
-
-      linkSelection!
-        .attr('x1', (d: any) => d.source.x)
-        .attr('y1', (d: any) => d.source.y)
-        .attr('x2', (d: any) => d.target.x)
-        .attr('y2', (d: any) => d.target.y)
-
-      if (linkLabelSelection) {
-        linkLabelSelection
-          .attr('x', (d: any) => (d.source.x + d.target.x) / 2)
-          .attr('y', (d: any) => (d.source.y + d.target.y) / 2)
-      }
-
-      nodeSelection!.attr('transform', (d: GraphNode) => `translate(${d.x},${d.y})`)
-
+      renderPositions()
       scheduleMinimapDraw()
     }
 
-    // Auto-stop after convergence to save CPU/RAM
     if (simulation && simulation.alpha() < 0.005) {
       simulation.stop()
-      // Update labels after simulation converges
+      renderPositions()
+      // Re-frame once after the first settle, unless the user already took over
+      if (!hasAutoFitted && !userMovedView) fitToView(400)
+      hasAutoFitted = true
       updateLabelVisibility()
       scheduleMinimapDraw()
     }
   })
 
-  // Restart with low alpha for gentle settling
   simulation.alpha(0.3).restart()
 
-  // Apply initial visibility (respects minCooccurrence and hiddenTypes)
-  nextTick(() => {
-    updateVisibility()
-    // Apply pending search highlight
-    if (props.searchHighlight) {
-      applySearchHighlight(props.searchHighlight)
-    }
-  })
+  // Keep the overview framing; the search match is focused, not zoomed to
+  if (props.searchHighlight) {
+    applySearchHighlight(props.searchHighlight, false)
+  }
 
-  // Drag functions
   function dragstarted(event: any, d: GraphNode) {
-    if (!event.active) simulation?.alphaTarget(0.3).restart()
+    if (!event.active) simulation?.alphaTarget(0.2).restart()
     d.fx = d.x
     d.fy = d.y
+    hideTooltip()
   }
 
   function dragged(event: any, d: GraphNode) {
@@ -1285,24 +1326,47 @@ function initGraph() {
 
   function dragended(event: any, d: GraphNode) {
     if (!event.active) simulation?.alphaTarget(0)
-    d.fx = null
-    d.fy = null
-    // Update labels after drag
+    // The ego center stays anchored
+    if (d.id !== props.highlightNodeId || layout !== 'force') {
+      d.fx = null
+      d.fy = null
+    }
     updateLabelVisibility()
   }
+}
+
+// Degree among all loaded edges (used for link strength)
+let degreeCache = new Map<number, number>()
+function degreeOf(id: number): number {
+  if (degreeCache.size === 0) {
+    for (const e of allEdges) {
+      const s = idOf(e.source)
+      const t = idOf(e.target)
+      degreeCache.set(s, (degreeCache.get(s) || 0) + 1)
+      degreeCache.set(t, (degreeCache.get(t) || 0) + 1)
+    }
+  }
+  return degreeCache.get(id) || 1
 }
 
 let tooltipHideTimer: ReturnType<typeof setTimeout> | null = null
 
 function showTooltip(event: any, data: any) {
+  // Touch screens emulate hover on tap; the focus panel covers that case
+  if (window.matchMedia?.('(hover: none)').matches) return
   if (tooltipHideTimer) {
     clearTimeout(tooltipHideTimer)
     tooltipHideTimer = null
   }
+  // Flip to the other side near the right/bottom viewport edges
+  const tipW = 330
+  const tipH = 170
+  const x = event.clientX + tipW + 16 > window.innerWidth ? event.clientX - tipW - 12 : event.clientX + 12
+  const y = event.clientY + tipH > window.innerHeight ? event.clientY - tipH : event.clientY - 10
   tooltip.value = {
     visible: true,
-    x: event.clientX + 10,
-    y: event.clientY - 10,
+    x: Math.max(8, x),
+    y: Math.max(8, y),
     data,
   }
 }
@@ -1326,87 +1390,69 @@ function onTooltipLeave() {
   tooltip.value.visible = false
 }
 
+function reinit() {
+  degreeCache = new Map()
+  nextTick(() => initGraph())
+}
+
 onMounted(() => {
-  nextTick(() => {
-    initGraph()
-  })
+  reinit()
 })
 
 // Reinitialize when data changes
 watch(() => [props.data?.nodes.length, props.data?.edges.length], (newVal, oldVal) => {
   if (newVal[0] !== oldVal?.[0] || newVal[1] !== oldVal?.[1]) {
-    // Reset ego pin on data change (nodes may have changed), preserve legend toggles
-    pinnedEgoNodeId.value = null
-    activeEgoNodeId.value = null
-    nextTick(() => {
-      initGraph()
-    })
+    if (pinnedEgoNodeId.value !== null) {
+      pinnedEgoNodeId.value = null
+      emit('nodeSelect', null)
+    }
+    reinit()
   }
 })
 
 // Reinitialize when dimensions change (e.g. fullscreen toggle)
 watch(() => [props.width, props.height], (newVal, oldVal) => {
   if (newVal[0] !== oldVal?.[0] || newVal[1] !== oldVal?.[1]) {
-    nextTick(() => {
-      initGraph()
-    })
+    reinit()
   }
 })
 
-// Reinitialize when highlighted node changes
 watch(() => props.highlightNodeId, () => {
-  nextTick(() => {
-    initGraph()
-  })
+  reinit()
 })
 
-// Reinitialize when layout strategy changes
 watch(() => props.layout, () => {
-  pinnedEgoNodeId.value = null
-  activeEgoNodeId.value = null
-  nextTick(() => {
-    initGraph()
-  })
+  if (pinnedEgoNodeId.value !== null) {
+    pinnedEgoNodeId.value = null
+    emit('nodeSelect', null)
+  }
+  reinit()
 })
 
-// Watch minCooccurrence for dynamic edge-weight filtering
 watch(() => props.minCooccurrence, () => {
   updateVisibility()
 })
 
-// Watch searchHighlight prop
 watch(() => props.searchHighlight, (newVal) => {
   applySearchHighlight(newVal || null)
 })
 
-// Watch showMinimap prop
 watch(() => props.showMinimap, (val) => {
   if (val) {
     nextTick(() => drawMinimap())
   }
 })
 
-// Sync prop inward (parent badge click) and apply D3 side-effects
-// Apply D3 side-effects whenever shared hiddenEntityTypes changes (from legend or badges)
+// Shared hiddenEntityTypes changed (legend or toolbar)
 watch(hiddenEntityTypes, () => {
-  // If pinned ego node's type is now hidden, clear pin
-  if (pinnedEgoNodeId.value !== null) {
-    const pinnedNode = allNodes.find(n => n.id === pinnedEgoNodeId.value)
-    if (pinnedNode && hiddenEntityTypes.value.includes(pinnedNode.type)) {
-      pinnedEgoNodeId.value = null
-      applyEgoHighlight(null)
-    }
-  }
-
   updateVisibility()
-
-  // Reheat simulation so remaining nodes spread
+  // Reheat so remaining nodes spread into the freed space
   if (simulation) {
     simulation.alpha(0.3).restart()
   }
 })
 
-// Cleanup - properly dispose of D3 resources to prevent memory leaks
+// Cleanup - dispose of D3 resources to prevent memory leaks
 onBeforeUnmount(() => {
   if (simulation) {
     simulation.stop()
@@ -1417,21 +1463,23 @@ onBeforeUnmount(() => {
     svg.remove()
     svg = null
   }
-  if (zoom) {
-    zoom = null
-  }
-  // Null module-scope selections
+  zoom = null
   linkSelection = null
+  labelLayer = null
   nodeSelection = null
   linkLabelSelection = null
   nodeLabels = null
-  gSelection = null
   allEdges = []
   allNodes = []
+  nodeById = new Map()
   tooltip.value.visible = false
   if (tooltipHideTimer) {
     clearTimeout(tooltipHideTimer)
     tooltipHideTimer = null
+  }
+  if (hoverTimer) {
+    clearTimeout(hoverTimer)
+    hoverTimer = null
   }
   if (minimapTimer) {
     clearTimeout(minimapTimer)
@@ -1445,13 +1493,9 @@ onBeforeUnmount(() => {
   position: relative;
   width: 100%;
   height: 100%;
-  background: #f8fafc;
+  background: var(--color-paper, #f7f5ef);
   border-radius: 8px;
   overflow: hidden;
-}
-
-:root.dark .entity-network-container {
-  background: #1e293b;
 }
 
 .graph-canvas {
@@ -1459,31 +1503,58 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
-.network-svg {
+/* D3-created elements carry no scoped attribute, hence :deep() */
+.graph-canvas :deep(.network-svg) {
   display: block;
-  background: #fff;
+  background: var(--color-paper, #f7f5ef);
+  cursor: grab;
 }
 
-:root.dark .network-svg {
-  background: #0f172a;
+.graph-canvas :deep(.network-svg:active) {
+  cursor: grabbing;
 }
 
-.edge {
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.node {
+.graph-canvas :deep(.edge) {
   cursor: pointer;
 }
 
-.node-label {
-  font-family: system-ui, -apple-system, sans-serif;
+.graph-canvas :deep(.node) {
+  cursor: pointer;
+}
+
+.graph-canvas :deep(.node circle) {
+  transition: r 0.12s ease-out;
+}
+
+.graph-canvas :deep(.node-label) {
+  font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   font-weight: 500;
+  font-size: calc(11px * var(--inv-k, 1));
+  fill: var(--color-ink-2, #3b352a);
+  /* Halo so names stay legible over lines */
+  stroke: var(--color-paper, #f7f5ef);
+  stroke-width: calc(3px * var(--inv-k, 1));
+  stroke-linejoin: round;
+  paint-order: stroke;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.15s;
 }
 
-:root.dark .node-label {
-  fill: #e2e8f0 !important;
+.graph-canvas :deep(.node-label-strong) {
+  font-weight: 700;
+  fill: var(--color-ink, #17140e);
+}
+
+.graph-canvas :deep(.edge-label) {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  fill: var(--color-ink-3, #6b6353);
+  stroke: var(--color-paper, #f7f5ef);
+  stroke-width: 2.5px;
+  paint-order: stroke;
+  pointer-events: none;
+  user-select: none;
 }
 
 .tooltip {
@@ -1493,11 +1564,11 @@ onBeforeUnmount(() => {
 }
 
 .tooltip-content {
-  background: #1e293b;
-  color: #f8fafc;
+  background: #1c1a16;
+  color: #f7f5ef;
   padding: 12px;
   border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
   min-width: 200px;
   max-width: 320px;
 }
@@ -1506,7 +1577,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .tooltip-image {
@@ -1515,44 +1586,52 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   object-fit: cover;
   flex-shrink: 0;
-  background: #334155;
+  background: #3b352a;
+}
+
+.tooltip-type {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #c4bfae;
+  margin-bottom: 2px;
+}
+
+.tooltip-type-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
 }
 
 .tooltip-name {
   font-weight: 600;
   font-size: 14px;
+  line-height: 1.3;
 }
 
 .tooltip-description {
   font-size: 12px;
-  color: #94a3b8;
+  color: #a8a291;
   margin-top: 4px;
   line-height: 1.4;
 }
 
 .tooltip-meta {
   font-size: 12px;
-  color: #cbd5e1;
-  margin-top: 4px;
+  color: #d9d3c3;
+  margin-top: 3px;
 }
 
-.tooltip-link {
-  display: inline-block;
+.tooltip-hint {
   margin-top: 8px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #93c5fd;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  text-decoration: none;
-  transition: background 0.15s, color 0.15s;
-  cursor: pointer;
-}
-
-.tooltip-link:hover {
-  background: #334155;
-  color: #bfdbfe;
+  padding-top: 6px;
+  border-top: 1px solid #3b352a;
+  font-size: 11px;
+  color: #9a9080;
 }
 
 /* Minimap canvas */
@@ -1561,16 +1640,11 @@ onBeforeUnmount(() => {
   bottom: 12px;
   right: 12px;
   border-radius: 6px;
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--color-rule, #d9d3c3);
+  background: color-mix(in srgb, var(--color-panel, #fff) 70%, transparent);
   backdrop-filter: blur(8px);
   cursor: pointer;
   z-index: 10;
-}
-
-:root.dark .minimap-canvas {
-  border-color: rgba(51, 65, 85, 0.5);
-  background: rgba(15, 23, 42, 0.7);
 }
 
 @media (max-width: 768px) {
@@ -1583,22 +1657,16 @@ onBeforeUnmount(() => {
   position: absolute;
   bottom: 12px;
   left: 12px;
-  background: rgba(255, 255, 255, 0.92);
+  background: color-mix(in srgb, var(--color-panel, #fff) 92%, transparent);
   backdrop-filter: blur(4px);
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--color-rule, #d9d3c3);
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 11px;
-  color: #334155;
+  color: var(--color-ink-2, #3b352a);
   line-height: 1.5;
   z-index: 10;
   max-width: 180px;
-}
-
-:root.dark .graph-legend {
-  background: rgba(15, 23, 42, 0.92);
-  border-color: #334155;
-  color: #cbd5e1;
 }
 
 .legend-title {
@@ -1623,11 +1691,7 @@ onBeforeUnmount(() => {
 }
 
 .legend-row-interactive:hover {
-  background: rgba(0, 0, 0, 0.06);
-}
-
-:root.dark .legend-row-interactive:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--color-paper-2, #eeebe2);
 }
 
 .legend-disabled {
@@ -1655,18 +1719,14 @@ onBeforeUnmount(() => {
 
 .legend-divider {
   height: 1px;
-  background: #e2e8f0;
+  background: var(--color-rule, #d9d3c3);
   margin: 5px 0;
-}
-
-:root.dark .legend-divider {
-  background: #334155;
 }
 
 .legend-hint {
   margin-top: 5px;
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--color-ink-4, #9a9080);
   line-height: 1.4;
 }
 </style>

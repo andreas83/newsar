@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { GraphData } from './EntityNetworkGraph.vue'
+import type { GraphData, GraphNode, NetworkSelection } from './EntityNetworkGraph.vue'
 
 const props = defineProps<{
   entityId: number
@@ -34,6 +34,8 @@ const maxNodes = ref(100)
 const searchQuery = ref('')
 const loading = ref(false)
 const rawData = ref<GraphData | null>(null)
+const selection = ref<NetworkSelection | null>(null)
+const hasExplored = ref(false)
 
 // Fullscreen & sizing
 const explorerSection = ref<HTMLElement | null>(null)
@@ -50,29 +52,17 @@ let strengthTimer: ReturnType<typeof setTimeout> | null = null
 let nodesTimer: ReturnType<typeof setTimeout> | null = null
 
 // --- Computed ---
-const hiddenTypeCount = computed(() => 4 - visibleTypes.value.size)
+const hiddenTypeCount = computed(() => hiddenEntityTypes.value.length)
 
-const filteredData = computed<GraphData | null>(() => {
-  if (!rawData.value) return null
-
-  const nodes = rawData.value.nodes.filter(n => visibleTypes.value.has(n.type))
-  const nodeIds = new Set(nodes.map(n => n.id))
-
-  const edges = rawData.value.edges.filter(e => {
-    const sourceId = typeof e.source === 'number' ? e.source : e.source.id
-    const targetId = typeof e.target === 'number' ? e.target : e.target.id
-    return nodeIds.has(sourceId) && nodeIds.has(targetId)
-  })
-
-  return { nodes, edges }
-})
+// Type hiding happens inside the graph (no relayout), so pass the full data
+const hasData = computed(() => (rawData.value?.nodes.length ?? 0) > 0)
 
 const visibleStats = ref<{ visibleNodes: number; visibleEdges: number } | null>(null)
 
 const typeDistribution = computed(() => {
-  if (!filteredData.value?.nodes) return []
+  if (!rawData.value?.nodes) return []
   const counts: Record<string, number> = {}
-  for (const n of filteredData.value.nodes) {
+  for (const n of rawData.value.nodes) {
     counts[n.type] = (counts[n.type] || 0) + 1
   }
   return entityTypeDefs.map(t => ({
@@ -151,8 +141,14 @@ function toggleFullscreen() {
   }
 }
 
-function handleNodeClick(node: { type: string, slug: string | null }) {
+// Double-click (or the panel button) opens the entity page
+function handleNodeClick(node: GraphNode) {
   if (node.slug) navigateTo(`/${node.type}/${node.slug}`)
+}
+
+function handleNodeSelect(sel: NetworkSelection | null) {
+  selection.value = sel
+  if (sel) hasExplored.value = true
 }
 
 function handleVisibleStats(stats: { visibleNodes: number; visibleEdges: number }) {
@@ -190,7 +186,8 @@ function onKeydown(event: KeyboardEvent) {
       searchInput.value?.focus()
       break
     case 'Escape':
-      document.exitFullscreen().catch(() => {})
+      if (selection.value) graphRef.value?.clearFocus()
+      else document.exitFullscreen().catch(() => {})
       break
   }
 }
@@ -228,6 +225,8 @@ function onFullscreenChange() {
   if (!document.fullscreenElement) {
     setTimeout(() => { isFullscreen.value = false }, 150)
   }
+  // The graph remounts in the other mode, so focus does not carry over
+  selection.value = null
 }
 </script>
 
@@ -244,33 +243,62 @@ function onFullscreenChange() {
         <div class="flex items-center gap-2 min-w-0">
           <span class="i-heroicons-share w-4 h-4 text-accent flex-shrink-0" />
           <span class="text-sm font-bold text-ink truncate">Entity Network</span>
-          <span v-if="!loading && filteredData" class="text-[11px] text-ink-4 flex-shrink-0">
-            {{ filteredData.nodes.length }} nodes, {{ filteredData.edges.length }} edges
+          <span v-if="!loading && visibleStats" class="text-[11px] text-ink-4 flex-shrink-0">
+            {{ visibleStats.visibleNodes }} entities, {{ visibleStats.visibleEdges }} links
           </span>
         </div>
-        <button class="inline-fullscreen-btn" title="Open fullscreen" @click="toggleFullscreen">
+        <button class="inline-fullscreen-btn" title="Explore fullscreen" @click="toggleFullscreen">
           <span class="i-heroicons-arrows-pointing-out w-4 h-4" />
         </button>
       </div>
 
-      <!-- Graph at 400px -->
-      <div v-if="filteredData && filteredData.nodes.length > 0" class="h-[400px]">
+      <!-- Legend doubles as type filter -->
+      <div v-if="typeDistribution.length" class="inline-legend">
+        <button
+          v-for="et in typeDistribution"
+          :key="et.type"
+          class="inline-legend-item"
+          :class="{ 'type-toggle-hidden': isTypeHidden(et.type) }"
+          :title="`${isTypeHidden(et.type) ? 'Show' : 'Hide'} ${et.label.toLowerCase()} nodes`"
+          @click="toggleType(et.type)"
+        >
+          <span class="w-2 h-2 rounded-full flex-shrink-0" :style="{ background: isTypeHidden(et.type) ? '#94a3b8' : et.color }" />
+          {{ et.label }} <span class="text-ink-4">{{ et.count }}</span>
+        </button>
+        <span class="inline-legend-hint">
+          {{ hasExplored ? 'Bigger = more connected' : 'Click a node to explore · double-click to open' }}
+        </span>
+      </div>
+
+      <div v-if="hasData" class="relative h-[460px]">
         <EntityNetworkGraph
-          :data="filteredData"
+          ref="graphRef"
+          :data="rawData!"
           :width="graphContainerWidth"
-          :height="400"
+          :height="460"
           :show-legend="false"
+          :highlight-node-id="entityId"
           @node-click="handleNodeClick"
+          @node-select="handleNodeSelect"
           @update:visible-stats="handleVisibleStats"
         />
+        <NetworkFocusPanel
+          v-if="selection"
+          :selection="selection"
+          :max-items="6"
+          compact
+          @focus="graphRef?.focusNode($event)"
+          @open="handleNodeClick"
+          @close="graphRef?.clearFocus()"
+        />
       </div>
-      <div v-else-if="!loading" class="flex items-center justify-center h-[400px] text-ink-4">
+      <div v-else-if="!loading" class="flex items-center justify-center h-[460px] text-ink-4">
         <div class="text-center">
           <span class="i-heroicons-circle-stack w-8 h-8 mx-auto block mb-2 opacity-50" />
           <p class="text-sm">No network data available</p>
         </div>
       </div>
-      <div v-else class="flex items-center justify-center h-[400px]">
+      <div v-else class="flex items-center justify-center h-[460px]">
         <div class="inline-block w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
       </div>
     </template>
@@ -286,7 +314,7 @@ function onFullscreenChange() {
       </div>
 
       <!-- Empty -->
-      <div v-else-if="!filteredData || filteredData.nodes.length === 0" class="absolute inset-0 flex items-center justify-center z-10">
+      <div v-else-if="!hasData" class="absolute inset-0 flex items-center justify-center z-10">
         <div class="text-center max-w-sm">
           <span class="i-heroicons-circle-stack w-10 h-10 text-ink-4 mx-auto block mb-3" />
           <p class="text-ink-3 font-medium mb-2">No network data</p>
@@ -295,16 +323,25 @@ function onFullscreenChange() {
       </div>
 
       <!-- Graph -->
-      <template v-if="filteredData && filteredData.nodes.length > 0">
+      <template v-if="hasData">
         <EntityNetworkGraph
           ref="graphRef"
-          :data="filteredData"
+          :data="rawData!"
           :height="windowHeight"
           :show-legend="false"
+          :highlight-node-id="entityId"
           :search-highlight="searchHighlight"
           :show-minimap="showMinimap"
           @node-click="handleNodeClick"
+          @node-select="handleNodeSelect"
           @update:visible-stats="handleVisibleStats"
+        />
+        <NetworkFocusPanel
+          v-if="selection"
+          :selection="selection"
+          @focus="graphRef?.focusNode($event)"
+          @open="handleNodeClick"
+          @close="graphRef?.clearFocus()"
         />
       </template>
 
@@ -318,12 +355,14 @@ function onFullscreenChange() {
               :key="et.type"
               class="type-toggle"
               :class="{ 'type-toggle-hidden': isTypeHidden(et.type) }"
+              :title="`${isTypeHidden(et.type) ? 'Show' : 'Hide'} ${et.label.toLowerCase()} nodes`"
               @click="toggleType(et.type)"
             >
               <span
                 class="w-2 h-2 rounded-full flex-shrink-0"
                 :style="{ background: isTypeHidden(et.type) ? '#94a3b8' : et.color }"
               />
+              <span class="type-toggle-label">{{ et.label }}</span>
               <span class="type-toggle-count">{{ et.count }}</span>
             </button>
           </div>
@@ -411,7 +450,7 @@ function onFullscreenChange() {
       </div>
 
       <!-- ===== Stats watermark (bottom-left) ===== -->
-      <div class="stats-watermark" v-if="visibleStats || filteredData">
+      <div class="stats-watermark" v-if="visibleStats">
         <span v-if="visibleStats">{{ visibleStats.visibleNodes }} nodes</span>
         <span v-if="visibleStats"> | {{ visibleStats.visibleEdges }} edges</span>
         <span v-if="hiddenTypeCount > 0"> | {{ hiddenTypeCount }} type{{ hiddenTypeCount > 1 ? 's' : '' }} hidden</span>
@@ -438,6 +477,12 @@ function onFullscreenChange() {
         >
           <span class="i-heroicons-map w-4 h-4" />
         </button>
+      </div>
+
+      <!-- First-use hint -->
+      <div v-if="!hasExplored && !loading && hasData" class="explore-hint">
+        <span class="i-heroicons-cursor-arrow-rays w-3.5 h-3.5 text-accent" />
+        Click a node to see its connections &middot; double-click to open it
       </div>
 
       <!-- Keyboard shortcuts hint -->
@@ -510,8 +555,11 @@ function onFullscreenChange() {
 .floating-toolbar {
   position: absolute;
   top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* left+right+auto margins center it without halving the shrink-to-fit width */
+  left: 12px;
+  right: 12px;
+  margin-inline: auto;
+  width: fit-content;
   z-index: 20;
   display: flex;
   align-items: center;
@@ -660,6 +708,77 @@ function onFullscreenChange() {
 
 .type-toggle-count {
   font-variant-numeric: tabular-nums;
+  color: var(--color-ink-4);
+}
+
+.type-toggle-label {
+  display: none;
+  color: var(--color-ink-2);
+}
+
+@media (min-width: 1024px) {
+  .type-toggle-label {
+    display: inline;
+  }
+}
+
+/* --- Inline legend --- */
+.inline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  padding: 0 12px 8px;
+}
+
+.inline-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-2);
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.inline-legend-item:hover {
+  background: var(--color-paper-2);
+}
+
+.inline-legend-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-ink-4);
+}
+
+@media (max-width: 640px) {
+  .inline-legend-hint {
+    display: none;
+  }
+}
+
+/* --- First-use hint --- */
+.explore-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--color-ink-2);
+  background: color-mix(in srgb, var(--color-panel, #fff) 90%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--color-rule);
+  box-shadow: 0 2px 8px rgba(23, 20, 14, 0.08);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 /* Toolbar controls */

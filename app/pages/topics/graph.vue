@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { GraphNode, NetworkSelection } from '~/components/EntityNetworkGraph.vue'
+
 const route = useRoute()
 const router = useRouter()
 
@@ -18,7 +20,8 @@ const selectedLayout = ref<'force' | 'radial' | 'hierarchical'>('force')
 const loading = ref(true)
 const error = ref<string | null>(null)
 const graphData = ref<any>(null)
-const selectedNode = ref<any>(null)
+const selection = ref<NetworkSelection | null>(null)
+const hasExplored = ref(false)
 
 // Search suggestions
 const searchQuery = ref(centerQuery)
@@ -140,7 +143,7 @@ function handleSearchEnter() {
 async function fetchGraph() {
   loading.value = true
   error.value = null
-  selectedNode.value = null
+  selection.value = null
 
   try {
     const params: Record<string, any> = {
@@ -205,8 +208,14 @@ function onFullscreenChange() {
 
 // --- Interactions ---
 
-function handleNodeClick(node: any) {
-  selectedNode.value = node
+// Double-click opens the entity page; single click focuses (see handleNodeSelect)
+function handleNodeClick(node: GraphNode) {
+  openEntity(node)
+}
+
+function handleNodeSelect(sel: NetworkSelection | null) {
+  selection.value = sel
+  if (sel) hasExplored.value = true
 }
 
 function handleEdgeClick(_edge: any) {
@@ -217,29 +226,18 @@ function handleVisibleStats(stats: { visibleNodes: number; visibleEdges: number 
   visibleStats.value = stats
 }
 
-function navigateToEntity() {
-  if (selectedNode.value?.type && selectedNode.value?.slug) {
-    router.push(`/${selectedNode.value.type}/${selectedNode.value.slug}`)
+function openEntity(node: GraphNode) {
+  if (node.type && node.slug) {
+    router.push(`/${node.type}/${node.slug}`)
   }
 }
 
-function focusEntity() {
-  if (!selectedNode.value) return
-  filters.value.center = selectedNode.value.name
-  searchQuery.value = selectedNode.value.name
-  setSearchHighlight(selectedNode.value.name)
+// Re-fetch the network with this entity as its center
+function recenterOn(node: GraphNode) {
+  filters.value.center = node.name
+  searchQuery.value = node.name
+  setSearchHighlight(node.name)
   applyFilters()
-}
-
-function getNodeConnections(nodeId: number): number {
-  if (!graphData.value?.edges) return 0
-  return graphData.value.edges.filter(
-    (e: any) => {
-      const sId = typeof e.source === 'number' ? e.source : e.source?.id
-      const tId = typeof e.target === 'number' ? e.target : e.target?.id
-      return sId === nodeId || tId === nodeId
-    }
-  ).length
 }
 
 // --- Keyboard Shortcuts ---
@@ -291,8 +289,8 @@ function onKeydown(event: KeyboardEvent) {
       searchInput.value?.focus()
       break
     case 'Escape':
-      if (selectedNode.value) {
-        selectedNode.value = null
+      if (selection.value) {
+        graphRef.value?.clearFocus()
       } else if (searchQuery.value) {
         clearSearch()
       }
@@ -375,6 +373,7 @@ useHead({
         :search-highlight="searchHighlight"
         :show-minimap="showMinimap"
         @node-click="handleNodeClick"
+        @node-select="handleNodeSelect"
         @edge-click="handleEdgeClick"
         @update:visible-stats="handleVisibleStats"
       />
@@ -457,12 +456,14 @@ useHead({
             :key="et.type"
             class="type-toggle"
             :class="{ 'type-toggle-hidden': isTypeHidden(et.type) }"
+            :title="`${isTypeHidden(et.type) ? 'Show' : 'Hide'} ${et.label.toLowerCase()} nodes`"
             @click="toggleEntityType(et.type)"
           >
             <span
               class="w-2 h-2 rounded-full flex-shrink-0"
               :style="{ background: isTypeHidden(et.type) ? '#94a3b8' : et.color }"
             />
+            <span class="type-toggle-label">{{ et.label }}</span>
             <span class="type-toggle-count">{{ et.count }}</span>
           </button>
         </div>
@@ -561,63 +562,33 @@ useHead({
       leave-from-class="opacity-100 translate-x-0"
       leave-to-class="opacity-0 translate-x-4"
     >
-      <div v-if="selectedNode" class="detail-panel" @click.stop>
-        <!-- Close -->
-        <button
-          class="absolute top-3 right-3 text-ink-4 hover:text-ink-2 transition-colors z-10"
-          @click="selectedNode = null"
-        >
-          <span class="i-heroicons-x-mark w-4 h-4" />
-        </button>
-
-        <!-- Entity info -->
-        <div class="pr-6">
-          <div class="flex items-center gap-2 mb-2">
-            <span
-              class="w-2.5 h-2.5 rounded-full flex-shrink-0"
-              :style="{ background: entityTypeDefs.find(t => t.type === selectedNode.type)?.color || '#6b7280' }"
-            />
-            <span class="text-[10px] font-medium text-ink-3 uppercase tracking-wider">{{ selectedNode.type }}</span>
-          </div>
-
-          <h3 class="text-base font-bold text-ink leading-tight mb-2">
-            {{ selectedNode.name }}
-          </h3>
-
-          <p v-if="selectedNode.shortDescription" class="text-xs text-ink-3 leading-relaxed mb-3">
-            {{ selectedNode.shortDescription }}
-          </p>
-        </div>
-
-        <!-- Stats -->
-        <div class="grid grid-cols-2 gap-2 mb-3">
-          <div class="bg-paper-2 rounded-md px-2.5 py-1.5">
-            <div class="text-sm font-bold text-ink">{{ getNodeConnections(selectedNode.id) }}</div>
-            <div class="text-[9px] text-ink-4 uppercase tracking-wider">Connections</div>
-          </div>
-          <div class="bg-paper-2 rounded-md px-2.5 py-1.5">
-            <div class="text-sm font-bold text-ink">{{ (selectedNode.trendingScore * 100).toFixed(0) }}%</div>
-            <div class="text-[9px] text-ink-4 uppercase tracking-wider">Trending</div>
-          </div>
-        </div>
-
-        <!-- Actions -->
-        <div class="flex flex-col gap-1.5">
+      <NetworkFocusPanel
+        v-if="selection"
+        :selection="selection"
+        @focus="graphRef?.focusNode($event)"
+        @open="openEntity"
+        @close="graphRef?.clearFocus()"
+      >
+        <template #actions="{ node }">
           <Button
-            v-if="selectedNode.slug"
-            class="w-full !text-xs !py-1.5"
-            @click="navigateToEntity"
-          >
-            View Entity Page
-          </Button>
-          <Button
+            v-if="node.name !== filters.center"
             variant="outline"
-            class="w-full !text-xs !py-1.5"
-            @click="focusEntity"
+            color="gray"
+            size="sm"
+            block
+            @click="recenterOn(node)"
           >
-            Focus Network
+            Center network on this
           </Button>
-        </div>
+        </template>
+      </NetworkFocusPanel>
+    </transition>
+
+    <!-- First-use hint -->
+    <transition leave-active-class="transition-opacity duration-300" leave-to-class="opacity-0">
+      <div v-if="!hasExplored && !loading && graphData?.nodes?.length" class="explore-hint">
+        <span class="i-heroicons-cursor-arrow-rays w-3.5 h-3.5 text-accent" />
+        Click a node to see its connections &middot; double-click to open it
       </div>
     </transition>
 
@@ -665,8 +636,11 @@ useHead({
 .floating-toolbar {
   position: absolute;
   top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* left+right+auto margins center it without halving the shrink-to-fit width */
+  left: 12px;
+  right: 12px;
+  margin-inline: auto;
+  width: fit-content;
   z-index: 20;
   display: flex;
   align-items: center;
@@ -865,6 +839,40 @@ useHead({
 
 .type-toggle-count {
   font-variant-numeric: tabular-nums;
+  color: var(--color-ink-4);
+}
+
+.type-toggle-label {
+  display: none;
+  color: var(--color-ink-2);
+}
+
+@media (min-width: 1024px) {
+  .type-toggle-label {
+    display: inline;
+  }
+}
+
+/* --- First-use hint --- */
+.explore-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--color-ink-2);
+  background: color-mix(in srgb, var(--color-panel, #fff) 90%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--color-rule);
+  box-shadow: 0 2px 8px rgba(23, 20, 14, 0.08);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 /* Toolbar controls */
@@ -1003,27 +1011,6 @@ useHead({
 
 :root.dark .zoom-sep {
   background: #334155;
-}
-
-/* --- Detail Panel --- */
-.detail-panel {
-  position: absolute;
-  top: 60px;
-  right: 12px;
-  width: 260px;
-  z-index: 20;
-  padding: 14px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--color-rule, #e2e8f0);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-}
-
-:root.dark .detail-panel {
-  background: rgba(18, 18, 18, 0.92);
-  border-color: #334155;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
 /* --- Keyboard shortcuts hint --- */
