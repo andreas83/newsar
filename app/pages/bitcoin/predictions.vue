@@ -26,11 +26,11 @@ function formatPct(val: any): string {
 }
 function formatDate(val: any): string {
   if (!val) return '--'
-  return new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  return new Date(val).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })
 }
 function formatDateShort(val: any): string {
   if (!val) return '--'
-  return new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return new Date(val).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
 }
 function directionBg(dir: string): string {
   if (dir === 'bullish') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
@@ -338,7 +338,7 @@ function getTimelinePoints(entries: any[], modelName: string): string {
           </div>
           <div class="border border-rule rounded-lg p-4 bg-surface">
             <div class="text-xs text-ink-4 font-mono mb-1">Price Records</div>
-            <div class="text-2xl font-mono font-bold text-ink">{{ dashboard.pipeline?.totalPrices?.toLocaleString() || 0 }}</div>
+            <div class="text-2xl font-mono font-bold text-ink">{{ dashboard.pipeline?.totalPrices?.toLocaleString('en-US') || 0 }}</div>
           </div>
           <div class="border border-rule rounded-lg p-4 bg-surface">
             <div class="text-xs text-ink-4 font-mono mb-1">Active Predictions</div>

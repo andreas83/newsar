@@ -258,7 +258,7 @@ useHead({
       <!-- Results Count -->
       <div class="mt-4 text-[13px] text-ink-3">
         <span v-if="!browsePending">
-          {{ meta.total.toLocaleString() }} {{ activeTab }}{{ meta.total !== 1 ? 's' : '' }}
+          {{ meta.total.toLocaleString('en-US') }} {{ activeTab }}{{ meta.total !== 1 ? 's' : '' }}
           <template v-if="debouncedSearch"> matching "{{ debouncedSearch }}"</template>
         </span>
       </div>

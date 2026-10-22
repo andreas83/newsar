@@ -38,7 +38,7 @@ function pnlColor(val: any): string {
 }
 function formatDateShort(val: any): string {
   if (!val) return '--'
-  return new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return new Date(val).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
 }
 
 function strategyBg(strategy: string): string {

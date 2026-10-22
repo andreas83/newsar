@@ -241,16 +241,16 @@ const publishedFormatted = computed(() => {
     day: days[d.getUTCDay()],
     date: d.toISOString().split('T')[0],
     time: `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} GMT`,
-    full: d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    full: d.toLocaleDateString('en-US', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' }),
   }
 })
 
 const articleRef = computed(() => {
   if (!article.value) return ''
   const d = article.value.publishedAt ? new Date(article.value.publishedAt) : new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
   return `NSR-${y}-${m}${day}-${String(articleId).padStart(3, '0')}`
 })
 
@@ -359,7 +359,7 @@ useHead({
         <div v-if="article.feedName" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">SRC</b>{{ article.feedName }}</div>
         <div v-if="article.classification?.language" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">LANG</b>{{ article.classification.language.toUpperCase() }}</div>
         <div v-if="article.classification?.politicalBias !== null && article.classification?.politicalBias !== undefined" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">LEAN</b>{{ getBiasLabel(article.classification.politicalBias) }}</div>
-        <div v-if="article.wordCount" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">WORDS</b>{{ article.wordCount.toLocaleString() }}</div>
+        <div v-if="article.wordCount" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">WORDS</b>{{ article.wordCount.toLocaleString('en-US') }}</div>
         <div v-if="article.entities?.length" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">ENT</b>{{ article.entities.length }}</div>
       </div>
       <div class="flex gap-4 text-[#A7A08C] whitespace-nowrap">
@@ -446,7 +446,7 @@ useHead({
         </div>
         <div class="stat-cell">
           <div class="stat-label">Word count</div>
-          <div class="stat-value">{{ article.wordCount?.toLocaleString() || '—' }}<sub class="stat-unit">words</sub></div>
+          <div class="stat-value">{{ article.wordCount?.toLocaleString('en-US') || '—' }}<sub class="stat-unit">words</sub></div>
         </div>
         <div class="stat-cell">
           <div class="stat-label">Sources cited</div>
@@ -591,7 +591,7 @@ useHead({
             <div class="intel-sect-head">
               <span class="sect-num">§ 04</span>
               <h2 class="sect-title">Full report</h2>
-              <span class="sect-tag">{{ article.readingTimeMinutes || '?' }} min read · {{ article.wordCount?.toLocaleString() || '?' }} words</span>
+              <span class="sect-tag">{{ article.readingTimeMinutes || '?' }} min read · {{ article.wordCount?.toLocaleString('en-US') || '?' }} words</span>
             </div>
             <article class="body-text intel-card p-8 article-content">
               <div

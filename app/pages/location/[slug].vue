@@ -396,6 +396,7 @@ useHead({
 // Helper functions
 function formatDate(date: string | Date) {
   return new Date(date).toLocaleDateString('en-US', {
+    timeZone: 'UTC',
     year: 'numeric',
     month: 'long',
     day: 'numeric'

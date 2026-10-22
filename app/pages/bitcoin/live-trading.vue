@@ -75,7 +75,7 @@ function formatDateShort(val: any): string {
 }
 function formatDateOnly(val: any): string {
   if (!val) return '--'
-  return new Date(val).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return new Date(val).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
 }
 </script>
 
