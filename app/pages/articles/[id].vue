@@ -695,19 +695,17 @@ useHead({
             </div>
           </section>
 
-          <!-- §07 TOPIC CONNECTIONS -->
-          <section v-if="article.keywords?.length > 0" class="intel-sect">
+          <!-- §07 ENTITY CONNECTIONS -->
+          <section v-if="article.entities?.length > 1" class="intel-sect">
             <div class="intel-sect-head">
               <span class="sect-num">§ 07</span>
-              <h2 class="sect-title">Topic connections</h2>
-              <span class="sect-tag">Interactive graph</span>
+              <h2 class="sect-title">Connections</h2>
+              <span class="sect-tag">Who appears together in the news</span>
             </div>
             <div class="intel-card p-[22px]">
-              <TopicNetworkGraph
-                :keywords="article.keywords"
-                :entities="article.entities"
-              />
-              <div class="flex flex-wrap gap-[5px] mt-4 pt-4 border-t border-rule-soft">
+              <ArticleEntityNetwork :article-id="articleId" />
+              <div v-if="article.keywords?.length" class="flex flex-wrap items-center gap-[5px] mt-4 pt-4 border-t border-rule-soft">
+                <span class="font-mono text-[10px] tracking-widest uppercase text-ink-4 mr-2">Explore full graph</span>
                 <NuxtLink
                   v-for="(keyword, idx) in article.keywords.slice(0, 10)"
                   :key="idx"
