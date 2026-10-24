@@ -97,7 +97,7 @@ Guidelines:
 
 Only return the JSON, nothing else.`
 
-  return { prompt, options: { temperature: 0.2, maxTokens: 400, jsonMode: true } }
+  return { prompt, options: { temperature: 0.2, maxTokens: 700, jsonMode: true } } // 400 truncated ~1 in 8 Claude responses
 }
 
 /**

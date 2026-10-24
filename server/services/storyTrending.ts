@@ -398,18 +398,21 @@ export async function updateAllStoryTimestamps(): Promise<number> {
 
 /**
  * Update coverage bias distribution for all stories
- * Computes left/center/right article counts from classifications
+ * Computes left/center/right article counts from classifications. Articles
+ * from outlets not rated on left–right (feeds.lean_applicable = false) are
+ * counted separately as unrated.
  */
 export async function updateAllStoryCoverage(): Promise<number> {
   const db = getDatabase()
 
   const result = await db.execute(sql`
-    INSERT INTO story_coverage (story_id, left_count, center_count, right_count, total_sources, coverage_diversity_score, last_updated)
+    INSERT INTO story_coverage (story_id, left_count, center_count, right_count, unrated_count, total_sources, coverage_diversity_score, last_updated)
     SELECT
       s.id AS story_id,
       COALESCE(SUM(CASE WHEN c.political_bias <= -0.2 THEN 1 ELSE 0 END), 0) AS left_count,
       COALESCE(SUM(CASE WHEN c.political_bias > -0.2 AND c.political_bias < 0.2 THEN 1 ELSE 0 END), 0) AS center_count,
       COALESCE(SUM(CASE WHEN c.political_bias >= 0.2 THEN 1 ELSE 0 END), 0) AS right_count,
+      COALESCE(SUM(CASE WHEN f.lean_applicable = false THEN 1 ELSE 0 END), 0) AS unrated_count,
       COUNT(DISTINCT a.feed_id) AS total_sources,
       CASE
         WHEN COUNT(*) = 0 THEN 0
@@ -425,12 +428,14 @@ export async function updateAllStoryCoverage(): Promise<number> {
     FROM stories s
     JOIN story_members sm ON sm.story_id = s.id
     JOIN articles a ON a.id = sm.article_id
+    LEFT JOIN feeds f ON f.id = a.feed_id
     LEFT JOIN classifications c ON c.article_id = a.id
     GROUP BY s.id
     ON CONFLICT (story_id) DO UPDATE SET
       left_count = EXCLUDED.left_count,
       center_count = EXCLUDED.center_count,
       right_count = EXCLUDED.right_count,
+      unrated_count = EXCLUDED.unrated_count,
       total_sources = EXCLUDED.total_sources,
       coverage_diversity_score = EXCLUDED.coverage_diversity_score,
       last_updated = EXCLUDED.last_updated

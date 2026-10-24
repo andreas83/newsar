@@ -173,7 +173,7 @@ function buildPrompt(entity: EntityRef, since: Date, until: Date, selected: Wind
   const kind = TYPE_LABELS[entity.type] ?? 'entity'
   const sub = entity.subtype ? `, ${entity.subtype}` : ''
   const prev = previous?.summary
-    ? `PREVIOUS PROFILE (written ${previous.generatedAt ? day(previous.generatedAt) : 'earlier'}):
+    ? `PREVIOUS PROFILE (written ${previous.generatedAt ? day(previous.generatedAt) : 'earlier'}; background only and possibly outdated. Where it conflicts with the articles, the articles are right):
 Short: ${previous.shortDescription ?? ''}
 ${previous.summary}`
     : 'There is no previous profile.'
@@ -209,7 +209,12 @@ Rules for developments (0 to 5 items, most important first):
 - Every item cites at least one article id from the list above. The date is when it happened, usually the article date.
 - State the event itself ("Met Iran's foreign minister in Doha"). Never comment on the coverage or the profile ("highlights", "newsworthiness", "the summary").
 If nothing material happened, return an empty developments list and "noMajorChange": true.
-Use titles such as "President" or "former" only when the articles support them.`
+
+Rules for facts and fairness:
+- Current titles and offices come only from the articles, never from the previous profile or memory. Use titles such as "President" or "former" only when the articles support them. If the articles show ${entity.name} left an office or was replaced, say so plainly; never write hedges about the profile itself ("should not be assumed").
+- When the articles report criticism, accusations or findings against ${entity.name}, include their response or denial if the articles give one. Likewise include the other side's response when ${entity.name} accuses someone. If the articles give no response, say nothing about one; never claim something is missing from the articles.
+- Keep the articles' account of who did what to whom: do not turn a one-sided action (an attack, an arrest) into a mutual one, or the reverse.
+- Keep the articles' caveats (unverified claims, disputed figures, correlation rather than cause). Opinion columns are opinion: attribute their judgements to the writer, never state them as fact.`
 }
 
 /** Keep only well-formed developments that cite articles the model was shown. */
@@ -257,11 +262,11 @@ export async function buildEntityVersion(
   entity: EntityRef,
   window: { since: Date; until: Date },
   previous: PreviousVersion | null,
-  options: { minArticles?: number } = {},
+  options: { minArticles?: number, allowContext?: boolean } = {},
 ): Promise<VersionOutcome> {
   const all = await loadWindowArticles(entity.id, window.since, window.until)
   const isFirst = !previous?.summary
-  const selected = selectArticles(all, isFirst)
+  const selected = selectArticles(all, isFirst || !!options.allowContext)
   const stats = windowStats(all, selected)
   const minArticles = options.minArticles ?? (isFirst ? 1 : MIN_NEW_ARTICLES)
 
@@ -274,7 +279,7 @@ export async function buildEntityVersion(
   }
 
   const prompt = buildPrompt(entity, window.since, window.until, selected, all.length, previous)
-  const raw = await generateJSON<any>(prompt, undefined, { temperature: 0.2, maxTokens: 1800 })
+  const raw = await generateJSON<any>(prompt, undefined, { layer: 'summary', temperature: 0.2, maxTokens: 1800 })
 
   const shortDescription = typeof raw?.shortDescription === 'string' ? raw.shortDescription.trim().slice(0, 300) : ''
   const summary = typeof raw?.summary === 'string' ? raw.summary.trim() : ''
@@ -317,7 +322,7 @@ export type UpdateStatus = 'updated' | 'skipped' | 'no_change'
  * version. Archives the current version (unchanged) when a new one is written;
  * when there is too little new coverage, only records that it was checked.
  */
-export async function updateEntitySummary(entityId: number): Promise<UpdateStatus> {
+export async function updateEntitySummary(entityId: number, options: { force?: boolean } = {}): Promise<UpdateStatus> {
   const db = getDatabase()
 
   const [entity] = await db.select().from(entities).where(eq(entities.id, entityId)).limit(1)
@@ -327,9 +332,12 @@ export async function updateEntitySummary(entityId: number): Promise<UpdateStatu
 
   const now = new Date()
   const floor = new Date(now.getTime() - MAX_WINDOW_DAYS * DAY_MS)
-  const since = existing?.generatedAt
-    ? new Date(Math.max(existing.generatedAt.getTime(), floor.getTime()))
-    : new Date(now.getTime() - FIRST_WINDOW_DAYS * DAY_MS)
+  // force reaches back to the cap so a stale profile can be rewritten even after a quiet week
+  const since = options.force
+    ? floor
+    : existing?.generatedAt
+      ? new Date(Math.max(existing.generatedAt.getTime(), floor.getTime()))
+      : new Date(now.getTime() - FIRST_WINDOW_DAYS * DAY_MS)
 
   console.log(`Generating summary for ${entity.type}: ${entity.name} (window ${day(since)} → ${day(now)})`)
 
@@ -342,6 +350,8 @@ export async function updateEntitySummary(entityId: number): Promise<UpdateStatu
       themes: (existing.themes as string[] | null) ?? [],
       generatedAt: existing.generatedAt,
     } : null,
+    // force: rewrite a stale profile even with little new coverage
+    options.force ? { minArticles: 1, allowContext: true } : {},
   )
 
   const touch = () => db.update(entitySummaries).set({ lastUpdated: now }).where(eq(entitySummaries.entityId, entityId))
@@ -352,7 +362,7 @@ export async function updateEntitySummary(entityId: number): Promise<UpdateStatu
     console.log(`  Skipped ${entity.name}: ${outcome.reason}`)
     return 'skipped'
   }
-  if (existing && outcome.noMajorChange) {
+  if (existing && outcome.noMajorChange && !options.force) {
     await touch()
     console.log(`  No major change for ${entity.name}; kept current version`)
     return 'no_change'

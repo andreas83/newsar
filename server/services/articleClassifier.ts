@@ -1,10 +1,11 @@
 import { getDatabase } from '../database/db.js'
 import { articles, feeds, classifications, entities as entitiesTable, articleEntities } from '../database/schema.js'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { detectLanguage, iso3ToIso1 } from './languageDetector.js'
 import { classifyBias, getBiasLabel, type BiasResult } from './biasClassifier.js'
 import { extractEntities, extractGeoPOV, normalizeEntityName, normalizeRole, type Entity } from './entityExtractor.js'
 import { extractArticleFeatures, storeArticleFeatures } from './articleFeatureExtractor.js'
+import { isOutletSelfMention } from '../utils/outletIdentity.js'
 
 /**
  * Generate a URL-safe slug from a name
@@ -30,8 +31,20 @@ export async function storeArticleEntities(articleId: number, extractedEntities:
 
   const db = getDatabase()
 
+  // Drop the publishing outlet's mentions of itself ("Al Jazeera" in an Al Jazeera article)
+  const [feed] = await db
+    .select({ publisherAliases: feeds.publisherAliases })
+    .from(articles)
+    .innerJoin(feeds, eq(articles.feedId, feeds.id))
+    .where(eq(articles.id, articleId))
+    .limit(1)
+  const subjectEntities = extractedEntities.filter(entity =>
+    entity.type !== 'organization' || !isOutletSelfMention(entity.name, feed?.publisherAliases)
+  )
+  if (subjectEntities.length === 0) return 0
+
   // Normalize all entity names
-  const normalizedEntities = extractedEntities.map(entity => ({
+  const normalizedEntities = subjectEntities.map(entity => ({
     ...entity,
     normalizedName: normalizeEntityName(entity.name, entity.type)
   }))
@@ -83,6 +96,24 @@ export async function storeArticleEntities(articleId: number, extractedEntities:
       // Also check the reverse: if "Donald Trump" is the new name,
       // see if an existing entity like "Donald J Trump" exists whose stripped form matches
       // This is handled by the DB having the canonical version, so less common
+    }
+  }
+
+  // Names that were merged into another entity live on as metadata.aliases;
+  // resolve them there instead of recreating the duplicate ("IDF", "Trump")
+  const unmatched = normalizedEntities.filter(e => !existingMap.has(e.normalizedName))
+  if (unmatched.length > 0) {
+    const aliasNames = [...new Set(unmatched.flatMap(e => [e.normalizedName, e.name]))]
+    const aliasRows = await db
+      .select({ id: entitiesTable.id, type: entitiesTable.type, aliases: sql<string[]>`${entitiesTable.metadata} -> 'aliases'` })
+      .from(entitiesTable)
+      .where(sql`${entitiesTable.metadata} -> 'aliases' ?| ${sql`array[${sql.join(aliasNames.map(n => sql`${n}`), sql`, `)}]::text[]`}`)
+      .orderBy(entitiesTable.id)
+    for (const entity of unmatched) {
+      const match = aliasRows.find(r =>
+        r.type === entity.type && (r.aliases.includes(entity.normalizedName) || r.aliases.includes(entity.name))
+      )
+      if (match) existingMap.set(entity.normalizedName, match.id)
     }
   }
 
@@ -217,6 +248,8 @@ export async function classifyArticle(articleId: number, useOllama: boolean = tr
         content: articles.content,
         fullContent: articles.fullContent,
         knownBias: feeds.knownBias,
+        leanApplicable: feeds.leanApplicable,
+        feedLanguage: feeds.language,
       })
       .from(articles)
       .leftJoin(feeds, eq(articles.feedId, feeds.id))
@@ -238,7 +271,8 @@ export async function classifyArticle(articleId: number, useOllama: boolean = tr
 
     // 2. Language detection
     const langResult = detectLanguage(textToAnalyze)
-    const language = iso3ToIso1(langResult.language)
+    const detected = iso3ToIso1(langResult.language)
+    const language = detected === 'und' && article.feedLanguage ? article.feedLanguage : detected
 
     console.log(`  Language: ${language} (confidence: ${langResult.confidence.toFixed(2)})`)
 
@@ -286,9 +320,20 @@ export async function classifyArticle(articleId: number, useOllama: boolean = tr
     // Skip AI bias analysis for thin content (<300 chars) — not enough signal to detect bias
     // Still use rule-based (known feed bias) if available
     const isContentThin = textToAnalyze.length < 300
+    // Outlets not rated on left–right (e.g. state media) get no lean at all,
+    // rather than a guess from the LLM
+    const isLeanRated = article.leanApplicable !== false
     let biasResult: BiasResult
 
-    if (isContentThin && article.knownBias === null) {
+    if (!isLeanRated) {
+      biasResult = {
+        bias: 0,
+        confidence: 1,
+        method: 'not-rated',
+        reasoning: 'Outlet is not rated on the left–right scale',
+      }
+      console.log(`  Bias: NOT RATED (outlet has no left–right rating)`)
+    } else if (isContentThin && article.knownBias === null) {
       // Thin content + unknown source → set bias to null (low confidence)
       biasResult = {
         bias: 0,
@@ -307,7 +352,7 @@ export async function classifyArticle(articleId: number, useOllama: boolean = tr
       )
       console.log(`  Bias: ${getBiasLabel(biasResult.bias)} (${biasResult.bias.toFixed(2)}, method: ${biasResult.method})`)
     }
-    const biasLabel = getBiasLabel(biasResult.bias)
+    const biasLabel = isLeanRated ? getBiasLabel(biasResult.bias) : 'not rated'
 
     // 4. Entity extraction
     let extractedEntities: any[] = []
@@ -364,7 +409,7 @@ export async function classifyArticle(articleId: number, useOllama: boolean = tr
       .values({
         articleId: article.id,
         language,
-        politicalBias: (isContentThin && article.knownBias === null) ? null : biasResult.bias,
+        politicalBias: (!isLeanRated || (isContentThin && article.knownBias === null)) ? null : biasResult.bias,
         geoPov,
         confidence: Math.min(langResult.confidence, biasResult.confidence),
         method: biasResult.method,

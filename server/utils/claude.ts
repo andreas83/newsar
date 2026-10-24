@@ -1,9 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { groundSystemPrompt } from './llmGrounding'
+
+export type LlmLayer = 'classification' | 'summary'
 
 let claudeClient: Anthropic | null = null
 
-// Rate limiting: 5 requests per minute
-const RATE_LIMIT_MAX = 5
+// Client-side rate limit (the SDK also retries 429s)
+const RATE_LIMIT_MAX = parseInt(process.env.CLAUDE_RATE_LIMIT_PER_MIN || '50', 10)
 const RATE_LIMIT_WINDOW_MS = 60 * 1000 // 1 minute
 const requestTimestamps: number[] = []
 
@@ -56,16 +59,43 @@ export function isClaudeAvailable(): boolean {
   return !!process.env.ANTHROPIC_API_KEY
 }
 
+/** Model for a pipeline layer: CLAUDE_MODEL for classification, CLAUDE_SUMMARY_MODEL for summaries */
+export function getClaudeModel(layer: LlmLayer = 'classification'): string {
+  const base = process.env.CLAUDE_MODEL || 'claude-haiku-5-5'
+  return layer === 'summary' ? (process.env.CLAUDE_SUMMARY_MODEL || base) : base
+}
+
 /**
- * Generate chat completion using Claude API
+ * Thinking off, matching the Gemini setup (thinking tokens bill as output).
+ * Sonnet 5.5 rejects `disabled`; `between_tools` is off when no tools are sent.
+ * Opus 5.5 can't turn thinking off, so leave it at the default.
+ */
+function thinkingOff(model: string): Anthropic.ThinkingConfigParam | undefined {
+  // between_tools is newer than the installed SDK's types
+  if (model.startsWith('claude-sonnet-5-5')) return { type: 'between_tools' } as unknown as Anthropic.ThinkingConfigParam
+  if (model.startsWith('claude-opus-5-5') || model.startsWith('claude-fable')) return undefined
+  return { type: 'disabled' }
+}
+
+function stripJsonFences(text: string): string {
+  let out = text.trim()
+  if (out.startsWith('```json')) out = out.slice(7)
+  else if (out.startsWith('```')) out = out.slice(3)
+  if (out.endsWith('```')) out = out.slice(0, -3)
+  return out.trim()
+}
+
+/**
+ * Generate chat completion using Claude API.
+ * No temperature: the Messages API rejects sampling parameters since 2026-10-21.
  */
 export async function generateClaudeCompletion(
   prompt: string,
   systemPrompt?: string,
   options?: {
     model?: string
-    temperature?: number
     maxTokens?: number
+    jsonMode?: boolean
   }
 ): Promise<string> {
   const client = getClaudeClient()
@@ -77,16 +107,18 @@ export async function generateClaudeCompletion(
   // Wait for rate limit
   await waitForRateLimit()
 
-  const model = options?.model || process.env.CLAUDE_MODEL || 'claude-3-5-haiku-20241022'
+  const model = options?.model || getClaudeModel()
   const maxTokens = options?.maxTokens || 2000
-  const temperature = options?.temperature || 0.3
+  const thinking = thinkingOff(model)
+  const system = groundSystemPrompt(systemPrompt || 'You are a helpful assistant that analyzes news articles.')
+    + (options?.jsonMode ? '\n\nRespond with valid JSON only. No markdown, no code blocks, just the raw JSON object.' : '')
 
   try {
     const response = await client.messages.create({
       model,
       max_tokens: maxTokens,
-      temperature,
-      system: systemPrompt || 'You are a helpful assistant that analyzes news articles.',
+      ...(thinking && { thinking }),
+      system,
       messages: [
         {
           role: 'user',
@@ -95,13 +127,23 @@ export async function generateClaudeCompletion(
       ],
     })
 
-    // Extract text from response
-    const textContent = response.content.find(block => block.type === 'text')
-    if (!textContent || textContent.type !== 'text') {
+    // Throw so the router falls back to the next provider
+    if (response.stop_reason === 'refusal') {
+      throw new Error('Claude declined the request (refusal)')
+    }
+    if (response.stop_reason === 'max_tokens') {
+      throw new Error(`Claude response truncated at max_tokens=${maxTokens}`)
+    }
+
+    const text = response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map(block => block.text)
+      .join('')
+    if (!text) {
       throw new Error('No text content in Claude response')
     }
 
-    return textContent.text
+    return options?.jsonMode ? stripJsonFences(text) : text
   } catch (error) {
     console.error('[Claude] API error:', error instanceof Error ? error.message : 'Unknown error')
     throw error
@@ -116,28 +158,10 @@ export async function generateClaudeJSON<T>(
   systemPrompt?: string,
   options?: {
     model?: string
-    temperature?: number
     maxTokens?: number
   }
 ): Promise<T> {
-  const jsonSystemPrompt = (systemPrompt || '') + '\n\nYou must respond with valid JSON only. No markdown, no code blocks, just the raw JSON object.'
-
-  const response = await generateClaudeCompletion(prompt, jsonSystemPrompt, {
-    ...options,
-    temperature: options?.temperature || 0.1, // Lower temperature for JSON
-  })
-
-  // Clean response - remove markdown code blocks if present
-  let cleanJson = response.trim()
-  if (cleanJson.startsWith('```json')) {
-    cleanJson = cleanJson.slice(7)
-  } else if (cleanJson.startsWith('```')) {
-    cleanJson = cleanJson.slice(3)
-  }
-  if (cleanJson.endsWith('```')) {
-    cleanJson = cleanJson.slice(0, -3)
-  }
-  cleanJson = cleanJson.trim()
+  const cleanJson = await generateClaudeCompletion(prompt, systemPrompt, { ...options, jsonMode: true })
 
   try {
     return JSON.parse(cleanJson) as T

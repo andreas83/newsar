@@ -19,6 +19,9 @@ const feedForm = ref({
   category: 'world',
   region: 'global',
   knownBias: 0,
+  leanApplicable: true,
+  ownership: 'private',
+  country: '',
   isActive: true,
 })
 
@@ -30,6 +33,9 @@ function openAddModal() {
     category: 'world',
     region: 'global',
     knownBias: 0,
+    leanApplicable: true,
+    ownership: 'private',
+    country: '',
     isActive: true,
   }
   isModalOpen.value = true
@@ -44,6 +50,9 @@ function openEditModal(feed: any) {
     category: feed.category || 'world',
     region: feed.region || 'global',
     knownBias: feed.knownBias || 0,
+    leanApplicable: feed.leanApplicable !== false,
+    ownership: feed.ownership || 'private',
+    country: feed.country || '',
     isActive: feed.isActive === 1,
   }
   isModalOpen.value = true
@@ -61,6 +70,9 @@ async function saveFeed() {
       method,
       body: {
         ...feedForm.value,
+        // Outlets not rated on left–right carry no bias score
+        knownBias: feedForm.value.leanApplicable ? feedForm.value.knownBias : null,
+        country: feedForm.value.country || null,
         isActive: feedForm.value.isActive ? 1 : 0,
       },
     })
@@ -187,7 +199,10 @@ function getBiasColor(bias: number | null) {
         </template>
 
         <template #knownBias-data="{ row }">
-          <Badge :color="getBiasColor(row.knownBias)" variant="subtle" size="sm">
+          <Badge v-if="row.leanApplicable === false" color="purple" variant="subtle" size="sm">
+            Not rated
+          </Badge>
+          <Badge v-else :color="getBiasColor(row.knownBias)" variant="subtle" size="sm">
             {{ getBiasLabel(row.knownBias) }}
           </Badge>
         </template>
@@ -317,7 +332,39 @@ function getBiasColor(bias: number | null) {
             </div>
           </div>
 
-          <div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium mb-1">Ownership</label>
+              <SelectMenu
+                v-model="feedForm.ownership"
+                :options="[
+                  { label: 'Privately owned', value: 'private' },
+                  { label: 'Public broadcaster', value: 'public' },
+                  { label: 'State media', value: 'state' },
+                  { label: 'Nonprofit', value: 'nonprofit' },
+                  { label: 'Trust-owned', value: 'trust' },
+                ]"
+              />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium mb-1">Country (ISO code)</label>
+              <Input v-model="feedForm.country" maxlength="2" placeholder="GB" />
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <input
+              id="leanApplicable"
+              v-model="feedForm.leanApplicable"
+              type="checkbox"
+              class="w-4 h-4 text-accent-600 rounded"
+            />
+            <label for="leanApplicable" class="text-sm font-medium">Rate on the left–right scale</label>
+            <span class="text-xs text-ink-3">(untick for state media and outlets outside Western party politics)</span>
+          </div>
+
+          <div v-if="feedForm.leanApplicable">
             <label class="block text-sm font-medium mb-1">
               Political Bias (-1 = Far Left, 0 = Center, 1 = Far Right)
             </label>

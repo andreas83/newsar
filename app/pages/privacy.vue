@@ -38,11 +38,25 @@
           <ul>
             <li>Personal identification information</li>
             <li>Email addresses or contact information</li>
-            <li>Reading history or browsing behavior</li>
-            <li>IP addresses or device information</li>
+            <li>Reading history or browsing behavior tied to you</li>
+            <li>IP addresses</li>
             <li>Cookies or tracking pixels</li>
             <li>Location data</li>
           </ul>
+
+          <h3>Anonymous Visitor Statistics</h3>
+          <p>
+            To know which pages are read, Newsar counts page views on its own server, without cookies and without
+            any third-party service. For each page view we store the page path, the referring website (domain only),
+            an optional campaign tag from the link, your browser and operating system family, device type (desktop,
+            mobile, tablet), preferred language, and how long the page was visible.
+          </p>
+          <p>
+            To count unique visitors per day, we combine your IP address and browser identifier with a random value
+            that changes every day and is deleted after two days, and keep only the resulting hash. Your IP address
+            itself is never stored, and the hash can't be linked back to you or to your visits on other days.
+            These statistics are kept for 13 months.
+          </p>
 
           <h2>How We Process Data</h2>
 

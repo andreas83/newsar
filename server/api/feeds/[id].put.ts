@@ -10,6 +10,11 @@ const updateFeedSchema = z.object({
   category: z.string().optional().nullable(),
   knownBias: z.number().min(-1).max(1).optional().nullable(),
   region: z.string().optional().nullable(),
+  publisher: z.string().optional().nullable(),
+  publisherAliases: z.array(z.string().min(1)).optional().nullable(),
+  ownership: z.enum(['private', 'public', 'state', 'nonprofit', 'trust']).optional().nullable(),
+  country: z.string().length(2).toUpperCase().optional().nullable(),
+  leanApplicable: z.boolean().optional(),
   isActive: z.number().int().min(0).max(1).optional(),
 })
 

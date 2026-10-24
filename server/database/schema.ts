@@ -25,6 +25,11 @@ export const feeds = pgTable('feeds', {
   language: varchar('language', { length: 10 }).default('en'), // ISO 639-1 language code
   isActive: integer('is_active').default(1).notNull(), // 1 = active, 0 = inactive
   extractionMethod: varchar('extraction_method', { length: 20 }).default('readability'), // 'readability', 'puppeteer' — per-feed override
+  publisher: varchar('publisher', { length: 255 }), // Outlet name for display ("BBC" for BBC News and BBC Mundo)
+  publisherAliases: text('publisher_aliases').array(), // Lowercase names the outlet appears as in text, for self-mention filtering
+  ownership: varchar('ownership', { length: 20 }), // 'private' | 'public' | 'state' | 'nonprofit' | 'trust'
+  country: varchar('country', { length: 2 }), // ISO 3166-1 alpha-2 of the outlet's home base
+  leanApplicable: boolean('lean_applicable').default(true).notNull(), // false = not rated on left–right (e.g. state media)
   lastFetchedAt: timestamp('last_fetched_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -265,6 +270,36 @@ export const entitySummaries = pgTable('entity_summaries', {
   lastUpdatedIdx: index('entity_summaries_last_updated_idx').on(table.lastUpdated.desc()),
 }))
 
+// Story redirects - old story IDs that dissolved during reclustering point at
+// the story that took most of their articles (keeps shared URLs working)
+export const storyRedirects = pgTable('story_redirects', {
+  oldId: integer('old_id').primaryKey(),
+  newId: integer('new_id').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  newIdIdx: index('story_redirects_new_id_idx').on(table.newId),
+}))
+
+// Story narratives - AI-written overview of a story (what, how it developed,
+// how outlets differ), generated from member article summaries
+export const storyNarratives = pgTable('story_narratives', {
+  storyId: integer('story_id').primaryKey().references(() => stories.id, { onDelete: 'cascade' }),
+  headline: text('headline').notNull(),
+  lede: text('lede').notNull(),
+  background: text('background'),
+  developments: jsonb('developments').notNull().default([]), // [{date, text, articleIds}]
+  perspectives: jsonb('perspectives').notNull().default([]), // [{outlet, feedIds, framing, articleIds}]
+  agreements: jsonb('agreements').notNull().default([]), // string[]
+  disagreements: jsonb('disagreements').notNull().default([]), // string[]
+  openQuestions: jsonb('open_questions').notNull().default([]), // string[]
+  articleIds: jsonb('article_ids').notNull().default([]), // member IDs at generation time
+  articleCount: integer('article_count').notNull().default(0),
+  model: varchar('model', { length: 100 }),
+  promptTokens: integer('prompt_tokens'),
+  outputTokens: integer('output_tokens'),
+  generatedAt: timestamp('generated_at').defaultNow().notNull(),
+})
+
 // Story coverage - Denormalized coverage diversity metrics
 export const storyCoverage = pgTable('story_coverage', {
   id: serial('id').primaryKey(),
@@ -272,6 +307,7 @@ export const storyCoverage = pgTable('story_coverage', {
   leftCount: integer('left_count').default(0).notNull(), // Articles from left-bias sources
   centerCount: integer('center_count').default(0).notNull(), // Articles from center-bias sources
   rightCount: integer('right_count').default(0).notNull(), // Articles from right-bias sources
+  unratedCount: integer('unrated_count').default(0).notNull(), // Articles from outlets not rated on left–right
   regionsJson: jsonb('regions_json'), // JSON array of covered regions
   totalSources: integer('total_sources').default(0).notNull(),
   coverageDiversityScore: real('coverage_diversity_score').default(0), // 0-1 score

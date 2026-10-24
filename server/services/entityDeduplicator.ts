@@ -144,6 +144,20 @@ export function scoreDuplicatePair(
   const tokens2 = tokenize(entity2.name)
   const extraTokenCount = Math.abs(tokens1.length - tokens2.length)
 
+  // A one-word person name is ambiguous. A bare given name ("Joe", "Steve")
+  // says nothing about who is meant; a bare surname ("Khamenei") may be one of
+  // several people. Never auto-merge either; surnames go to manual review.
+  const singleTokenPersonCap = entity1.type === 'person' && Math.min(tokens1.length, tokens2.length) === 1
+    && Math.max(tokens1.length, tokens2.length) > 1
+    ? (() => {
+        const [short, long] = tokens1.length === 1 ? [tokens1, tokens2] : [tokens2, tokens1]
+        return short[0] === long[long.length - 1] ? 0.6 : 0
+      })()
+    : null
+  if (singleTokenPersonCap === 0) {
+    return { confidence: 0, reasons: [] }
+  }
+
   if (isSubstringMatch(entity1.name, entity2.name)) {
     // Only treat as substring match if the extra tokens are minor (1 token difference max)
     // This prevents "China" matching "South China Sea" (2 extra tokens)
@@ -221,6 +235,10 @@ export function scoreDuplicatePair(
 
   // Cap at 1.0
   confidence = Math.min(1.0, confidence)
+  if (singleTokenPersonCap !== null) {
+    confidence = Math.min(singleTokenPersonCap, confidence)
+    reasons.push('Single surname: ambiguous, needs manual review')
+  }
 
   return { confidence, reasons }
 }
@@ -445,7 +463,7 @@ export async function mergeEntities(keepId: number, removeId: number): Promise<M
     .limit(1)
 
   const [removeEntity] = await db
-    .select({ id: entities.id, name: entities.name, type: entities.type })
+    .select({ id: entities.id, name: entities.name, type: entities.type, metadata: entities.metadata })
     .from(entities)
     .where(eq(entities.id, removeId))
     .limit(1)
@@ -606,8 +624,13 @@ export async function mergeEntities(keepId: number, removeId: number): Promise<M
   // ── Step 5: Store alias in kept entity's metadata ──────────────────────
   const existingMetadata = (keepEntity.metadata as Record<string, any>) || {}
   const aliases: string[] = existingMetadata.aliases || []
-  if (!aliases.includes(removeEntity.name)) {
-    aliases.push(removeEntity.name)
+  // Carry over aliases the removed entity collected from earlier merges, or
+  // those names would no longer resolve and their duplicates would come back
+  const removedAliases: string[] = (removeEntity.metadata as Record<string, any> | null)?.aliases || []
+  for (const alias of [removeEntity.name, ...removedAliases]) {
+    if (alias !== keepEntity.name && !aliases.includes(alias)) {
+      aliases.push(alias)
+    }
   }
 
   await db

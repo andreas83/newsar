@@ -39,6 +39,9 @@ Write a summary that:
 - Focuses on the "who, what, when, where, why"
 - Derives all facts strictly from the article content, not from the headline — headlines can be ambiguous
 - Carefully attributes actions and decisions to the correct actors as stated in the article (e.g. do not confuse who made a decision with who is affected by it)
+- Keeps the article's account of who did what to whom: do not turn a one-sided action (an attack, an arrest) into a mutual one ("clashed", "exchanged fire"), or the reverse
+- When the article reports criticism, accusations or findings against a person, government or organization, includes their response or denial if the article gives one; if it gives none, says nothing about a response
+- Keeps the article's caveats (unverified claims, disputed figures, "coincided with" rather than "caused")
 - Avoids opinion or interpretation
 - Is written in third person
 ${languageInstruction}
@@ -74,6 +77,7 @@ export async function generateSummary(
     const { prompt, options } = buildSummaryPrompt(title, content, targetLength, language, description)
 
     const response = await generateChatCompletion(prompt, undefined, {
+      layer: 'summary',
       temperature: options.temperature,
       maxTokens: options.maxTokens,
     })
@@ -128,6 +132,7 @@ Write a summary that:
 Return ONLY the summary text, no additional formatting or labels.`
 
     const response = await generateChatCompletion(prompt, undefined, {
+      layer: 'summary',
       temperature: 0.4,
       maxTokens: 500,
     })
@@ -170,6 +175,7 @@ Requirements:
 Return ONLY the headline text.`
 
     const response = await generateChatCompletion(prompt, undefined, {
+      layer: 'summary',
       temperature: 0.3,
       maxTokens: 50,
     })

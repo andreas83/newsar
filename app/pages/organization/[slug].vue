@@ -50,6 +50,7 @@
 
             <p v-if="data.summary.shortDescription" class="text-base sm:text-lg text-ink-3 mb-4">
               {{ data.summary.shortDescription }}
+              <AiLabel kind="generated" class="ml-1" />
             </p>
 
             <!-- Stock Price Badge -->
@@ -110,12 +111,12 @@
         <div class="lg:col-span-2 space-y-6">
           <!-- Summary Section -->
           <div v-if="data.summary.summary" class="bg-panel rounded-sm  border border-rule p-6">
-            <h2 class="text-xl font-bold text-ink mb-4">About</h2>
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <h2 class="text-xl font-bold text-ink">About</h2>
+              <AiLabel kind="generated" :date="data.summary.lastUpdated" />
+            </div>
             <div class="prose prose-gray max-w-none text-ink-2 leading-relaxed">
               {{ data.summary.summary }}
-            </div>
-            <div v-if="data.summary.lastUpdated" class="mt-4 text-xs text-ink-3">
-              Last updated: {{ formatDate(data.summary.lastUpdated) }}
             </div>
           </div>
 

@@ -2,7 +2,10 @@
   <div v-if="entries.length > 0" class="bg-panel rounded-sm border border-rule p-6">
     <div class="flex items-baseline justify-between gap-3 mb-1">
       <h2 class="text-xl font-bold text-ink">Summary Evolution</h2>
-      <span class="text-xs font-mono text-ink-3">{{ total }} {{ total === 1 ? 'entry' : 'entries' }}</span>
+      <span class="flex items-center gap-2">
+        <AiLabel kind="generated" />
+        <span class="text-xs font-mono text-ink-3">{{ total }} {{ total === 1 ? 'entry' : 'entries' }}</span>
+      </span>
     </div>
     <p class="text-sm text-ink-3 mb-5">How coverage of {{ entityName }} changed, week by week. Each point links to its sources.</p>
 

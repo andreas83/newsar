@@ -22,9 +22,10 @@ import {
   storyCoverage,
   storyEntities,
   storyMetrics,
+  storyRedirects,
   feeds,
 } from '../database/schema'
-import { eq, sql, inArray, isNotNull } from 'drizzle-orm'
+import { and, eq, sql, inArray } from 'drizzle-orm'
 import { normalizeGeoPov } from './geoNormalizer'
 
 // --- Types ---
@@ -35,6 +36,8 @@ export interface EntityClusterResult {
   articlesGrouped: number
   orphansAssigned: number
   candidatePairs: number
+  storiesKept?: number
+  storiesRemoved?: number
   error?: string
 }
 
@@ -595,12 +598,279 @@ async function computeTopicMetadata(
   return { topicLabel, primaryRegion, primaryEntities: primaryEntitiesResult, timeSpanHours }
 }
 
+// --- Temporal Outliers ---
+
+/** An article this far from both of its time neighbours doesn't belong to the story. */
+const OUTLIER_GAP_MS = 14 * 24 * 60 * 60 * 1000
+
+/**
+ * Drop isolated articles whose publish date is weeks away from every other
+ * member (e.g. one March article inside an October riot story). They stretch
+ * the story's time span and timeline without adding to it.
+ */
+function pruneTemporalOutliers(articleIds: number[], articleMap: Map<number, ArticleData>): number[] {
+  const dated = articleIds
+    .map(id => ({ id, t: articleMap.get(id)?.publishedAt?.getTime() }))
+    .filter((a): a is { id: number; t: number } => a.t !== undefined)
+    .sort((a, b) => a.t - b.t)
+
+  if (dated.length < 3) return articleIds
+
+  const drop = new Set<number>()
+  for (let i = 0; i < dated.length; i++) {
+    const gapBefore = i > 0 ? dated[i].t - dated[i - 1].t : Infinity
+    const gapAfter = i < dated.length - 1 ? dated[i + 1].t - dated[i].t : Infinity
+    if (gapBefore > OUTLIER_GAP_MS && gapAfter > OUTLIER_GAP_MS) drop.add(dated[i].id)
+  }
+
+  // Never prune a cluster down to nothing meaningful
+  if (drop.size === 0 || dated.length - drop.size < 2) return articleIds
+  return articleIds.filter(id => !drop.has(id))
+}
+
+// --- Writing Clusters (stable story identity) ---
+
+/**
+ * A new cluster keeps an old story's ID when it carries on that story:
+ * most of the old story is in it, or most of it comes from the old story and
+ * that is still a fair part of the old story.
+ */
+const KEEP_ID_MIN_OLD_SHARE = 0.5
+const KEEP_ID_MIN_NEW_SHARE = 0.6
+const KEEP_ID_MIN_OLD_SHARE_WEAK = 0.25
+
+interface ClusterWriteStats {
+  kept: number
+  created: number
+  removed: number
+  redirected: number
+  articlesGrouped: number
+}
+
+/** Match each new cluster (by index) to the old story ID it continues. */
+async function matchPreviousStories(finalClusters: number[][]): Promise<{
+  matches: Map<number, number>
+  oldMembers: Map<number, Set<number>>
+}> {
+  const db = getDatabase()
+  const rows = await db
+    .select({ storyId: storyMembers.storyId, articleId: storyMembers.articleId })
+    .from(storyMembers)
+
+  const oldMembers = new Map<number, Set<number>>()
+  const oldStoryOf = new Map<number, number>()
+  for (const row of rows) {
+    if (!oldMembers.has(row.storyId)) oldMembers.set(row.storyId, new Set())
+    oldMembers.get(row.storyId)!.add(row.articleId)
+    oldStoryOf.set(row.articleId, row.storyId)
+  }
+
+  const candidates: { ci: number; storyId: number; overlap: number; jaccard: number }[] = []
+  finalClusters.forEach((cluster, ci) => {
+    const overlaps = new Map<number, number>()
+    for (const articleId of cluster) {
+      const storyId = oldStoryOf.get(articleId)
+      if (storyId !== undefined) overlaps.set(storyId, (overlaps.get(storyId) || 0) + 1)
+    }
+    for (const [storyId, overlap] of overlaps) {
+      const oldSize = oldMembers.get(storyId)!.size
+      const oldShare = overlap / oldSize
+      const newShare = overlap / cluster.length
+      if (oldShare >= KEEP_ID_MIN_OLD_SHARE || (newShare >= KEEP_ID_MIN_NEW_SHARE && oldShare >= KEEP_ID_MIN_OLD_SHARE_WEAK)) {
+        candidates.push({ ci, storyId, overlap, jaccard: overlap / (oldSize + cluster.length - overlap) })
+      }
+    }
+  })
+
+  // Greedy: biggest continuations claim their ID first; each ID used once
+  candidates.sort((a, b) => b.overlap - a.overlap || b.jaccard - a.jaccard)
+  const matches = new Map<number, number>()
+  const usedIds = new Set<number>()
+  for (const c of candidates) {
+    if (matches.has(c.ci) || usedIds.has(c.storyId)) continue
+    matches.set(c.ci, c.storyId)
+    usedIds.add(c.storyId)
+  }
+
+  return { matches, oldMembers }
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
+async function writeClusters(
+  finalClusters: number[][],
+  articleMap: Map<number, ArticleData>,
+  idfMap: Map<number, IdfEntry>,
+  dryRun: boolean,
+): Promise<ClusterWriteStats> {
+  const db = getDatabase()
+  const { matches, oldMembers } = await matchPreviousStories(finalClusters)
+  const keptIds = new Set(matches.values())
+  const removedIds = [...oldMembers.keys()].filter(id => !keptIds.has(id))
+  const articlesGrouped = finalClusters.reduce((sum, c) => sum + c.length, 0)
+
+  if (dryRun) {
+    return { kept: matches.size, created: finalClusters.length - matches.size, removed: removedIds.length, redirected: 0, articlesGrouped }
+  }
+
+  // Compute everything that needs reads before opening the transaction
+  const prepared: {
+    ci: number
+    cluster: number[]
+    metadata: Awaited<ReturnType<typeof computeTopicMetadata>>
+    representative: ArticleData
+    values: Omit<typeof stories.$inferInsert, 'id' | 'status'>
+  }[] = []
+  for (const [ci, cluster] of finalClusters.entries()) {
+    const metadata = await computeTopicMetadata(cluster, articleMap, idfMap)
+    const members = cluster.map(id => articleMap.get(id)).filter((a): a is ArticleData => !!a)
+    if (members.length === 0) continue
+
+    // Representative: most recent article
+    const representative = [...members].sort((a, b) => (b.publishedAt?.getTime() || 0) - (a.publishedAt?.getTime() || 0))[0]
+    const uniqueFeeds = new Set(members.map(a => a.feedId).filter(Boolean))
+
+    // Primary language: majority language of member articles
+    const langCounts = new Map<string, number>()
+    for (const a of members) {
+      if (a.language) langCounts.set(a.language, (langCounts.get(a.language) || 0) + 1)
+    }
+    const primaryLanguage = [...langCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null
+
+    const timestamps = members
+      .map(a => a.publishedAt)
+      .filter((t): t is Date => t !== null)
+      .sort((a, b) => a.getTime() - b.getTime())
+
+    prepared.push({
+      ci,
+      cluster,
+      metadata,
+      representative,
+      values: {
+        representativeTitle: representative.title,
+        articleCount: cluster.length,
+        sourceCount: uniqueFeeds.size,
+        firstSeen: timestamps[0] || new Date(),
+        lastUpdated: timestamps[timestamps.length - 1] || new Date(),
+        primaryLanguage,
+        clusterMethod: 'auto',
+        topicLabel: metadata.topicLabel,
+        primaryRegion: metadata.primaryRegion,
+        primaryEntities: metadata.primaryEntities,
+        timeSpanHours: metadata.timeSpanHours,
+        clusterVersion: 'v2',
+      },
+    })
+  }
+
+  let redirected = 0
+  await db.transaction(async (tx) => {
+    const newStoryOf = new Map<number, number>()
+    let written = 0
+
+    for (const p of prepared) {
+      let storyId = matches.get(p.ci)
+      const repEmbedding = p.representative.embedding
+      const memberValues = (id: number) => p.cluster.map((articleId) => {
+        const article = articleMap.get(articleId)
+        const similarity = article?.embedding && repEmbedding ? cosineSimilarity(article.embedding, repEmbedding) : 0
+        return { storyId: id, articleId, similarity, isRepresentative: articleId === p.representative.id }
+      })
+
+      if (storyId !== undefined) {
+        // Status and trending score are left to updateStoryTrending
+        await tx.update(stories).set({ ...p.values, updatedAt: new Date() }).where(eq(stories.id, storyId))
+        const old = oldMembers.get(storyId)!
+        // Same members means the representative (newest article) is unchanged too
+        const unchanged = old.size === p.cluster.length && p.cluster.every(id => old.has(id))
+        if (!unchanged) {
+          await tx.delete(storyMembers).where(eq(storyMembers.storyId, storyId))
+          for (const batch of chunk(memberValues(storyId), 100)) await tx.insert(storyMembers).values(batch)
+        }
+      } else {
+        const [story] = await tx
+          .insert(stories)
+          .values({ ...p.values, status: 'active' })
+          .returning({ id: stories.id })
+        storyId = story.id
+        for (const batch of chunk(memberValues(storyId), 100)) await tx.insert(storyMembers).values(batch)
+      }
+
+      await tx.update(articles)
+        .set({ storyId })
+        .where(and(inArray(articles.id, p.cluster), sql`${articles.storyId} IS DISTINCT FROM ${storyId}`))
+
+      // Story entities follow the (IDF-weighted) metadata, which drifts even for unchanged members
+      await tx.delete(storyEntities).where(eq(storyEntities.storyId, storyId))
+      if (p.metadata.primaryEntities.length > 0) {
+        await tx.insert(storyEntities).values(p.metadata.primaryEntities.map((entity, idx) => ({
+          storyId: storyId!,
+          entityId: entity.id,
+          isPrimary: idx === 0,
+          relevance: 1.0 - idx * 0.15, // Decreasing relevance
+          articleCount: p.cluster.length,
+        })))
+      }
+
+      for (const articleId of p.cluster) newStoryOf.set(articleId, storyId)
+
+      written++
+      if (written % 500 === 0) {
+        console.log(`[EntityClustering] Written ${written} clusters...`)
+      }
+    }
+
+    // Dissolved stories redirect to the story that took most of their articles
+    for (const oldId of removedIds) {
+      const counts = new Map<number, number>()
+      for (const articleId of oldMembers.get(oldId)!) {
+        const target = newStoryOf.get(articleId)
+        if (target !== undefined) counts.set(target, (counts.get(target) || 0) + 1)
+      }
+      const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+      if (!best) continue
+      await tx.insert(storyRedirects)
+        .values({ oldId, newId: best[0] })
+        .onConflictDoUpdate({ target: storyRedirects.oldId, set: { newId: best[0], createdAt: new Date() } })
+      // Collapse chains: anything that pointed at the dissolved story now points at its successor
+      await tx.update(storyRedirects).set({ newId: best[0] }).where(eq(storyRedirects.newId, oldId))
+      redirected++
+    }
+
+    for (const ids of chunk(removedIds, 1000)) {
+      await tx.delete(storyMetrics).where(inArray(storyMetrics.storyId, ids))
+      await tx.delete(storyCoverage).where(inArray(storyCoverage.storyId, ids))
+      await tx.delete(storyEntities).where(inArray(storyEntities.storyId, ids))
+      await tx.delete(storyMembers).where(inArray(storyMembers.storyId, ids))
+    }
+
+    // Articles that fell out of every cluster (or whose story dissolved)
+    await tx.execute(sql`
+      UPDATE articles a SET story_id = NULL
+      WHERE a.story_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM story_members sm WHERE sm.article_id = a.id AND sm.story_id = a.story_id)
+    `)
+
+    for (const ids of chunk(removedIds, 1000)) {
+      await tx.delete(stories).where(inArray(stories.id, ids))
+    }
+  })
+
+  return { kept: matches.size, created: prepared.length - matches.size, removed: removedIds.length, redirected, articlesGrouped }
+}
+
 // --- Main Clustering Function ---
 
 export async function clusterWithEntities(
   threshold: number = 0.35,
   minSize: number = 2,
   maxSize: number = 80,
+  dryRun: boolean = false,
 ): Promise<EntityClusterResult> {
   const db = getDatabase()
 
@@ -693,6 +963,7 @@ export async function clusterWithEntities(
     // Step 5b: Filter out single-source clusters (all articles from same feed)
     const preFilterCount = finalClusters.length
     const multiSourceClusters = finalClusters.filter(cluster => {
+      if (cluster.length < minSize) return false
       const feedIds = new Set<number>()
       for (const articleId of cluster) {
         const article = articleMap.get(articleId)
@@ -765,134 +1036,23 @@ export async function clusterWithEntities(
 
     console.log(`[EntityClustering] Assigned ${orphansAssigned} orphan articles`)
 
-    // Step 7: Clear existing data and write to DB
-    console.log(`[EntityClustering] Writing ${finalClusters.length} clusters to database...`)
-
-    await db.delete(storyMetrics)
-    await db.delete(storyCoverage)
-    await db.delete(storyEntities)
-    await db.delete(storyMembers)
-    await db.update(articles).set({ storyId: null }).where(isNotNull(articles.storyId))
-    await db.delete(stories)
-
-    let groupsCreated = 0
-    let articlesGrouped = 0
-
-    for (const cluster of finalClusters) {
-      // Compute metadata
-      const metadata = await computeTopicMetadata(cluster, articleMap, idfMap)
-
-      // Get article details for representative and counts
-      const clusterArticles = await db
-        .select({
-          id: articles.id,
-          title: articles.title,
-          publishedAt: articles.publishedAt,
-          feedId: articles.feedId,
-        })
-        .from(articles)
-        .where(inArray(articles.id, cluster))
-
-      if (clusterArticles.length === 0) continue
-
-      // Representative: most recent article
-      const representative = clusterArticles
-        .sort((a, b) => (b.publishedAt?.getTime() || 0) - (a.publishedAt?.getTime() || 0))[0]
-
-      // Unique feeds
-      const uniqueFeeds = new Set(clusterArticles.map(a => a.feedId).filter(Boolean))
-
-      // Determine primary language (majority language of member articles)
-      const langCounts = new Map<string, number>()
-      for (const articleId of cluster) {
-        const article = articleMap.get(articleId)
-        if (article?.language) {
-          langCounts.set(article.language, (langCounts.get(article.language) || 0) + 1)
-        }
-      }
-      let primaryLanguage: string | null = null
-      let maxLangCount = 0
-      for (const [lang, count] of langCounts) {
-        if (count > maxLangCount) {
-          maxLangCount = count
-          primaryLanguage = lang
-        }
-      }
-
-      // Timestamps
-      const timestamps = clusterArticles
-        .map(a => a.publishedAt)
-        .filter((t): t is Date => t !== null)
-        .sort((a, b) => a.getTime() - b.getTime())
-
-      const [story] = await db
-        .insert(stories)
-        .values({
-          representativeTitle: representative.title,
-          articleCount: cluster.length,
-          sourceCount: uniqueFeeds.size,
-          firstSeen: timestamps[0] || new Date(),
-          lastUpdated: timestamps[timestamps.length - 1] || new Date(),
-          primaryLanguage,
-          clusterMethod: 'auto',
-          status: 'active',
-          topicLabel: metadata.topicLabel,
-          primaryRegion: metadata.primaryRegion,
-          primaryEntities: metadata.primaryEntities,
-          timeSpanHours: metadata.timeSpanHours,
-          clusterVersion: 'v2',
-        })
-        .returning({ id: stories.id })
-
-      // Insert story members
-      const memberValues = cluster.map((articleId, idx) => {
-        const article = articleMap.get(articleId)
-        // Compute similarity to representative
-        const repArticle = articleMap.get(representative.id)
-        let similarity = 0
-        if (article?.embedding && repArticle?.embedding) {
-          similarity = cosineSimilarity(article.embedding, repArticle.embedding)
-        }
-        return {
-          storyId: story.id,
-          articleId,
-          similarity,
-          isRepresentative: articleId === representative.id,
-        }
-      })
-
-      // Batch insert story members
-      for (let i = 0; i < memberValues.length; i += 100) {
-        const batch = memberValues.slice(i, i + 100)
-        await db.insert(storyMembers).values(batch)
-      }
-
-      // Update articles with story_id
-      await db.update(articles)
-        .set({ storyId: story.id })
-        .where(inArray(articles.id, cluster))
-
-      // Insert story entities (top entities for this cluster)
-      if (metadata.primaryEntities.length > 0) {
-        const storyEntityValues = metadata.primaryEntities.map((entity, idx) => ({
-          storyId: story.id,
-          entityId: entity.id,
-          isPrimary: idx === 0,
-          relevance: 1.0 - idx * 0.15, // Decreasing relevance
-          articleCount: cluster.length,
-        }))
-        await db.insert(storyEntities).values(storyEntityValues)
-      }
-
-      groupsCreated++
-      articlesGrouped += cluster.length
-
-      if (groupsCreated % 100 === 0) {
-        console.log(`[EntityClustering] Written ${groupsCreated} clusters...`)
-      }
+    // Step 6b: Drop articles published weeks away from the rest of their cluster.
+    // After orphan assignment, since that matches on embeddings alone and is
+    // where most of these come from.
+    let outliersDropped = 0
+    for (let i = 0; i < finalClusters.length; i++) {
+      const pruned = pruneTemporalOutliers(finalClusters[i], articleMap)
+      outliersDropped += finalClusters[i].length - pruned.length
+      finalClusters[i] = pruned
     }
+    console.log(`[EntityClustering] Dropped ${outliersDropped} temporal outlier articles`)
 
-    console.log(`[EntityClustering] Complete: ${groupsCreated} stories, ${articlesGrouped} articles grouped, ${orphansAssigned} orphans assigned`)
+    // Step 7: Write clusters, keeping the ID of any story a cluster continues
+    const written = await writeClusters(finalClusters, articleMap, idfMap, dryRun)
+    const groupsCreated = finalClusters.length
+    const articlesGrouped = written.articlesGrouped
+
+    console.log(`[EntityClustering] Complete${dryRun ? ' (dry run, nothing written)' : ''}: ${groupsCreated} stories (${written.kept} kept ID, ${written.created} new, ${written.removed} removed, ${written.redirected} redirected), ${articlesGrouped} articles grouped, ${orphansAssigned} orphans assigned`)
 
     return {
       success: true,
@@ -900,6 +1060,8 @@ export async function clusterWithEntities(
       articlesGrouped,
       orphansAssigned,
       candidatePairs: candidatePairs.size,
+      storiesKept: written.kept,
+      storiesRemoved: written.removed,
     }
   } catch (error) {
     console.error('[EntityClustering] Error:', error)

@@ -53,6 +53,11 @@ function getDefaultModel(): string {
   return process.env.GEMINI_MODEL || 'gemini-2.0-flash'
 }
 
+/** Model for the summarization layer (article summaries, story narratives); classification stays on GEMINI_MODEL. */
+export function getSummaryModel(): string {
+  return process.env.GEMINI_SUMMARY_MODEL || getDefaultModel()
+}
+
 interface GeminiContent {
   parts: Array<{ text: string }>
   role?: 'user' | 'model'

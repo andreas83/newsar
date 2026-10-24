@@ -9,6 +9,11 @@ const createFeedSchema = z.object({
   category: z.string().optional(),
   knownBias: z.number().min(-1).max(1).optional(), // -1 (left) to 1 (right)
   region: z.string().optional(),
+  publisher: z.string().optional(),
+  publisherAliases: z.array(z.string().min(1)).optional(),
+  ownership: z.enum(['private', 'public', 'state', 'nonprofit', 'trust']).optional(),
+  country: z.string().length(2).toUpperCase().optional(),
+  leanApplicable: z.boolean().optional(),
   isActive: z.number().int().min(0).max(1).default(1), // 1 = active, 0 = inactive
 })
 
@@ -30,6 +35,11 @@ export default defineEventHandler(async (event) => {
         category: validatedData.category,
         knownBias: validatedData.knownBias,
         region: validatedData.region,
+        publisher: validatedData.publisher,
+        publisherAliases: validatedData.publisherAliases,
+        ownership: validatedData.ownership,
+        country: validatedData.country,
+        leanApplicable: validatedData.leanApplicable,
         isActive: validatedData.isActive,
       })
       .returning()

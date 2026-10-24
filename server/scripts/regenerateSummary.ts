@@ -40,6 +40,7 @@ const { prompt, options } = buildSummaryPrompt(article.title, content, 'medium',
 // Generate new summary
 console.log('\nGenerating summary...')
 const response = await generateChatCompletion(prompt, undefined, {
+  layer: 'summary',
   temperature: options.temperature,
   maxTokens: options.maxTokens,
 })

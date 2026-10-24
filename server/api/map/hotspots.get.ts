@@ -82,28 +82,16 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  // 24h hourly volume by category (keyword-based)
-  const tlRes: any = await db.execute(sql`
-    SELECT a.id AS article_id, date_trunc('hour', a.published_at) AS hour,
-      (SELECT string_agg(sub.keyword, ' | ')
-       FROM (
-         SELECT keyword FROM keywords
-         WHERE article_id = a.id AND category = 'topic'
-         ORDER BY relevance_score DESC LIMIT 3
-       ) sub
-      ) AS top_keywords
-    FROM articles a
-    WHERE a.published_at > NOW() - INTERVAL '24 hours'
-      AND a.excluded = false
-  `)
-
-  // Recent pings
-  const pingRes: any = await db.execute(sql`
-    SELECT DISTINCT ON (a.id)
-      a.id AS article_id, a.title, a.published_at,
-      f.name AS feed_name,
-      e.name AS location_name, e.slug AS location_slug,
-      c.sensationalism,
+  // Activity: last 24 clock hours (current hour partial) + the 24h before for comparison.
+  // published_at is a naive timestamp holding UTC; read it as UTC explicitly, since both the
+  // session TimeZone and node-pg would otherwise interpret it as server-local time.
+  const nowMs = Date.now()
+  const HOUR = 3600_000
+  const winStart = Math.floor(nowMs / HOUR) * HOUR - 23 * HOUR
+  const prevStart = winStart - 24 * HOUR
+  const actRes: any = await db.execute(sql`
+    SELECT a.id AS article_id, a.title, f.name AS feed_name,
+      (EXTRACT(EPOCH FROM a.published_at AT TIME ZONE 'UTC') * 1000)::float8 AS published_ms,
       (SELECT string_agg(sub.keyword, ' | ')
        FROM (
          SELECT keyword FROM keywords
@@ -113,14 +101,101 @@ export default defineEventHandler(async (event) => {
       ) AS top_keywords
     FROM articles a
     JOIN feeds f ON f.id = a.feed_id
-    JOIN article_entities ae ON ae.article_id = a.id
-    JOIN entities e ON e.id = ae.entity_id AND e.type = 'location' AND e.slug IS NOT NULL
-    LEFT JOIN classifications c ON c.article_id = a.id
-    WHERE a.published_at > NOW() - INTERVAL '24 hours'
+    WHERE a.published_at >= (${new Date(prevStart).toISOString()}::timestamptz AT TIME ZONE 'UTC')
+      AND a.published_at <= (NOW() AT TIME ZONE 'UTC')
       AND a.excluded = false
-    ORDER BY a.id DESC, ae.relevance_score DESC
-    LIMIT 15
   `)
+  const actRows = (actRes.rows ?? actRes) as any[]
+  const actIds = actRows.map(r => r.article_id)
+
+  // Location mentions for those articles, most relevant first
+  const placesByArticle = new Map<number, Array<{ id: number; name: string; slug: string }>>()
+  if (actIds.length > 0) {
+    const locRes: any = await db.execute(sql`
+      SELECT ae.article_id, e.id, e.name, e.slug
+      FROM article_entities ae
+      JOIN entities e ON e.id = ae.entity_id AND e.type = 'location' AND e.slug IS NOT NULL
+      WHERE ae.article_id = ANY(${sql.raw(`ARRAY[${actIds.join(',')}]::int[]`)})
+      ORDER BY ae.article_id, ae.relevance_score DESC NULLS LAST
+    `)
+    for (const r of (locRes.rows ?? locRes) as any[]) {
+      const list = placesByArticle.get(r.article_id) || []
+      if (!list.some(p => p.id === r.id)) list.push({ id: r.id, name: r.name, slug: r.slug })
+      placesByArticle.set(r.article_id, list)
+    }
+  }
+
+  // Articles without topic keywords haven't been analyzed yet — keep them apart from 'other'
+  const categoryOf = (kw: string | null) => kw ? classifyByKeywords(kw) : 'pending'
+  const hourBuckets = Array.from({ length: 24 }, (_, i) => ({
+    hour: new Date(winStart + i * HOUR).toISOString(),
+    total: 0,
+    prev: 0,
+    partial: i === 23,
+    cats: {} as Record<string, number>,
+    prevCats: {} as Record<string, number>,
+  }))
+  const catCur: Record<string, number> = {}
+  const catPrev: Record<string, number> = {}
+  const placeAgg = new Map<number, { id: number; name: string; slug: string; n: number; prev: number; hours: number[] }>()
+  const activityArticles: any[] = []
+  for (const r of actRows) {
+    const t = Number(r.published_ms)
+    const cat = categoryOf(r.top_keywords)
+    const places = placesByArticle.get(r.article_id) || []
+    if (t >= winStart) {
+      const i = Math.min(23, Math.floor((t - winStart) / HOUR))
+      const b = hourBuckets[i]!
+      b.total++
+      b.cats[cat] = (b.cats[cat] || 0) + 1
+      catCur[cat] = (catCur[cat] || 0) + 1
+      for (const p of places) {
+        const agg = placeAgg.get(p.id) || { ...p, n: 0, prev: 0, hours: new Array(24).fill(0) }
+        agg.n++
+        agg.hours[i]++
+        placeAgg.set(p.id, agg)
+      }
+      activityArticles.push({
+        articleId: r.article_id,
+        title: r.title,
+        publishedAt: new Date(t).toISOString(),
+        feedName: r.feed_name,
+        category: cat,
+        hourIndex: i,
+        places: places.slice(0, 3).map(p => ({ name: p.name, slug: p.slug })),
+      })
+    } else if (t < nowMs - 24 * HOUR) {
+      // Same elapsed slice one day earlier, so the partial current hour compares like-for-like
+      const i = Math.floor((t - prevStart) / HOUR)
+      const pb = hourBuckets[i]!
+      pb.prev++
+      pb.prevCats[cat] = (pb.prevCats[cat] || 0) + 1
+      catPrev[cat] = (catPrev[cat] || 0) + 1
+      for (const p of places) {
+        const agg = placeAgg.get(p.id) || { ...p, n: 0, prev: 0, hours: new Array(24).fill(0) }
+        agg.prev++
+        placeAgg.set(p.id, agg)
+      }
+    }
+  }
+  activityArticles.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+  const activity = {
+    windowStart: new Date(winStart).toISOString(),
+    generatedAt: new Date(nowMs).toISOString(),
+    total: hourBuckets.reduce((s, b) => s + b.total, 0),
+    prevTotal: hourBuckets.reduce((s, b) => s + b.prev, 0),
+    hours: hourBuckets,
+    categories: Object.fromEntries(
+      [...new Set([...Object.keys(catCur), ...Object.keys(catPrev)])]
+        .map(c => [c, { n: catCur[c] || 0, prev: catPrev[c] || 0 }])
+    ),
+    places: [...placeAgg.values()]
+      .filter(p => p.n > 0)
+      .sort((a, b) => b.n - a.n || (b.n - b.prev) - (a.n - a.prev))
+      .slice(0, 10),
+    placeCount: [...placeAgg.values()].filter(p => p.n > 0).length,
+    articles: activityArticles.slice(0, 400),
+  }
 
   // Fetch cached coordinates for all hotspot names
   let coordMap = new Map<string, { lat: number; lon: number }>()
@@ -203,30 +278,9 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  const hourMap: Record<string, Record<string, number>> = {}
-  for (const r of (tlRes.rows ?? tlRes) as any[]) {
-    const iso = new Date(r.hour).toISOString()
-    const cat = classifyByKeywords(r.top_keywords)
-    hourMap[iso] = hourMap[iso] || {}
-    hourMap[iso][cat] = (hourMap[iso][cat] || 0) + 1
-  }
-  const timelineBuckets = Object.entries(hourMap)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([hour, cats]) => ({ hour, ...cats }))
-
   return {
     hotspots,
-    timeline: timelineBuckets,
-    pings: ((pingRes.rows ?? pingRes) as any[]).map(p => ({
-      articleId: p.article_id,
-      title: p.title,
-      publishedAt: p.published_at,
-      feedName: p.feed_name,
-      category: classifyByKeywords(p.top_keywords),
-      locationName: p.location_name,
-      locationSlug: p.location_slug,
-      sensationalism: p.sensationalism ? Number(p.sensationalism) : null,
-    })),
+    activity,
     stats: {
       hotspotCount: hotspots.length,
       critical: bySev.critical,

@@ -1,19 +1,19 @@
 {
-  "generated_at": "2026-10-22T00:15:06.957387",
+  "generated_at": "2026-10-24T00:15:07.905337",
   "criterion": "brier_skill > 0 on the live track record of the deciding score",
   "horizon_days": 28,
   "sources": {
     "heuristic": {
       "tradeable": false,
-      "reason": "brier_skill -0.0096 <= 0",
+      "reason": "brier_skill -0.0095 <= 0",
       "score": "signal_strength",
       "label_expr": "actual_change_4w - benchmark > 0",
-      "brier_skill": -0.009646159207719496,
-      "auc": 0.500009506607092,
-      "auc_ci_low": 0.4457250116317843,
-      "auc_ci_high": 0.5498226209239241,
-      "n": 649,
-      "n_eff": 179
+      "brier_skill": -0.009507747754281759,
+      "auc": 0.5033693224125093,
+      "auc_ci_low": 0.4494751501776824,
+      "auc_ci_high": 0.5539119399849637,
+      "n": 656,
+      "n_eff": 180
     },
     "ml_model": {
       "tradeable": false,
@@ -28,5 +28,5 @@
       "n_eff": 111
     }
   },
-  "version": "b8c2f94c8d3e8156"
+  "version": "a3a6483adff2063b"
 }

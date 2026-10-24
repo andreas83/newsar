@@ -5,6 +5,7 @@
       <Icon name="i-heroicons-scale" class="w-4 h-4 text-ink-3" />
       <h2 class="sect-title">Perspective Analysis</h2>
       <span class="sect-tag">L / C / R</span>
+      <AiLabel kind="generated" basis="excerpts" />
     </div>
 
     <!-- Story context -->
@@ -81,7 +82,7 @@
     <!-- Footer -->
     <div class="border border-t-0 border-rule bg-paper-2 px-5 py-3 flex items-center justify-between">
       <span class="font-mono text-[10px] text-ink-4 tracking-wider uppercase">
-        {{ story.leftCount + story.centerCount + story.rightCount }} articles across the spectrum
+        {{ story.leftCount + story.centerCount + story.rightCount }} articles across the spectrum<template v-if="story.unratedCount"> · {{ story.unratedCount }} from outlets not rated on left–right</template>
       </span>
       <NuxtLink
         :to="`/stories/${story.id}`"
@@ -114,6 +115,7 @@ interface Props {
     leftCount: number
     centerCount: number
     rightCount: number
+    unratedCount?: number
   }
 }
 

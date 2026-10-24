@@ -8,7 +8,7 @@ import { generateChatCompletion } from '../utils/ollama.js'
 export interface BiasResult {
   bias: number // -1 (left) to 1 (right), 0 = center
   confidence: number // 0 to 1
-  method: 'rule-based' | 'ollama' | 'hybrid'
+  method: 'rule-based' | 'ollama' | 'hybrid' | 'not-rated'
   reasoning?: string
   techniques?: string[] // OSINT: detected propaganda/framing techniques
   classification?: string // OSINT: Left|Center-Left|Center|Center-Right|Right|Sensationalist
@@ -125,7 +125,7 @@ Only return JSON.`
 
     const response = await generateChatCompletion(prompt, systemPrompt, {
       temperature: 0, // Zero for consistent, objective analysis
-      maxTokens: 300,
+      maxTokens: 800, // Claude needs more room than Gemini for the same JSON
       format: 'json',
     })
 

@@ -237,6 +237,10 @@ export function normalizeEntityName(name: string, type: string): string {
     'ICC': 'International Criminal Court',
     'IMF': 'International Monetary Fund',
     'ECB': 'European Central Bank',
+    'Nato': 'NATO',
+    'IDF': 'Israel Defense Forces',
+    'IRGC': 'Islamic Revolutionary Guard Corps',
+    'PLA': "People's Liberation Army",
   }
 
   // Check exact alias match first

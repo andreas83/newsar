@@ -26,10 +26,13 @@ module.exports = {
         GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
         GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
         GEMINI_BATCH_MODEL: process.env.GEMINI_BATCH_MODEL || 'gemini-2.5-flash-lite',
+        GEMINI_SUMMARY_MODEL: process.env.GEMINI_SUMMARY_MODEL || 'gemini-2.5-flash',
         FORCE_GEMINI: process.env.FORCE_GEMINI || 'true',
         // Claude API for classification/analysis (fallback)
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
-        CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-3-5-haiku-20241022',
+        FORCE_CLAUDE: process.env.FORCE_CLAUDE || 'false',
+        CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-5-5',
+        CLAUDE_SUMMARY_MODEL: process.env.CLAUDE_SUMMARY_MODEL || 'claude-haiku-5-5',
         // Local Ollama (embeddings only, chat via Gemini)
         OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
         OLLAMA_EMBED_MODEL: process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text',
@@ -88,10 +91,13 @@ module.exports = {
         GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
         GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
         GEMINI_BATCH_MODEL: process.env.GEMINI_BATCH_MODEL || 'gemini-2.5-flash-lite',
+        GEMINI_SUMMARY_MODEL: process.env.GEMINI_SUMMARY_MODEL || 'gemini-2.5-flash',
         FORCE_GEMINI: process.env.FORCE_GEMINI || 'true',
         // Claude API for classification/analysis (fallback)
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
-        CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-3-5-haiku-20241022',
+        FORCE_CLAUDE: process.env.FORCE_CLAUDE || 'false',
+        CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-5-5',
+        CLAUDE_SUMMARY_MODEL: process.env.CLAUDE_SUMMARY_MODEL || 'claude-haiku-5-5',
         // Local Ollama (embeddings only, chat via Gemini)
         OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
         OLLAMA_EMBED_MODEL: process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text',

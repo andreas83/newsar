@@ -245,6 +245,18 @@ const publishedFormatted = computed(() => {
   }
 })
 
+// Lean for rated outlets, ownership · country for outlets not rated on left–right
+const outletTag = computed(() => article.value && getOutletTag({
+  bias: article.value.classification?.politicalBias,
+  leanApplicable: article.value.feedLeanApplicable,
+  ownership: article.value.feedOwnership,
+  country: article.value.feedCountry,
+}))
+const outletTagLabel = computed(() => article.value?.feedLeanApplicable === false ? 'Outlet' : 'Lean')
+const outletTagTitle = computed(() => article.value?.feedLeanApplicable === false
+  ? NOT_RATED_EXPLANATION
+  : 'Rating of the outlet, applied to all of its articles')
+
 const articleRef = computed(() => {
   if (!article.value) return ''
   const d = article.value.publishedAt ? new Date(article.value.publishedAt) : new Date()
@@ -358,7 +370,7 @@ useHead({
       <div class="ribbon-ticker flex gap-6 flex-1 overflow-hidden">
         <div v-if="article.feedName" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">SRC</b>{{ article.feedName }}</div>
         <div v-if="article.classification?.language" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">LANG</b>{{ article.classification.language.toUpperCase() }}</div>
-        <div v-if="article.classification?.politicalBias !== null && article.classification?.politicalBias !== undefined" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">LEAN</b>{{ getBiasLabel(article.classification.politicalBias) }}</div>
+        <div v-if="outletTag" class="whitespace-nowrap" :title="outletTagTitle"><b class="text-[#F0EBDB] mr-1.5 uppercase">{{ outletTagLabel }}</b>{{ outletTag }}</div>
         <div v-if="article.wordCount" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">WORDS</b>{{ article.wordCount.toLocaleString('en-US') }}</div>
         <div v-if="article.entities?.length" class="whitespace-nowrap"><b class="text-[#F0EBDB] mr-1.5">ENT</b>{{ article.entities.length }}</div>
       </div>
@@ -416,8 +428,8 @@ useHead({
             <span v-if="article.feedName">{{ article.feedName }}</span>
             <span v-if="article.feedName" class="sep-dot" />
             <span v-if="publishedFormatted">Filed {{ publishedFormatted.date }} · {{ publishedFormatted.time }}</span>
-            <span v-if="article.classification?.politicalBias !== null && article.classification?.politicalBias !== undefined" class="sep-dot" />
-            <span v-if="article.classification?.politicalBias !== null && article.classification?.politicalBias !== undefined" class="px-[7px] py-[2px] border border-rule rounded-sm bg-panel font-semibold text-ink-2 uppercase tracking-wider">Lean · {{ getBiasLabel(article.classification.politicalBias) }}</span>
+            <span v-if="outletTag" class="sep-dot" />
+            <span v-if="outletTag" class="px-[7px] py-[2px] border border-rule rounded-sm bg-panel font-semibold text-ink-2 uppercase tracking-wider" :title="outletTagTitle">{{ outletTagLabel }} · {{ outletTag }}</span>
             <span v-if="article.readingTimeMinutes" class="sep-dot" />
             <span v-if="article.readingTimeMinutes">Read · {{ article.readingTimeMinutes }} min</span>
           </div>
@@ -439,7 +451,7 @@ useHead({
       </section>
 
       <!-- ═══ TOPLINE STATS ═══ -->
-      <section class="topline-grid stat-grid grid-cols-5 mb-10">
+      <section class="topline-grid stat-grid grid-cols-4 mb-10">
         <div class="stat-cell">
           <div class="stat-label">Reading time</div>
           <div class="stat-value">{{ article.readingTimeMinutes || '—' }}<sub class="stat-unit">min</sub></div>
@@ -456,10 +468,6 @@ useHead({
           <div class="stat-label">Entities identified</div>
           <div class="stat-value">{{ article.entities?.length || 0 }}<sub class="stat-unit">entities</sub></div>
         </div>
-        <div class="stat-cell">
-          <div class="stat-label">Quality score</div>
-          <div class="stat-value">{{ article.qualityScore !== undefined ? Math.round(article.qualityScore * 100) : '—' }}<sub class="stat-unit">%</sub></div>
-        </div>
       </section>
 
       <!-- ═══ MAIN GRID ═══ -->
@@ -471,7 +479,7 @@ useHead({
             <div class="intel-sect-head">
               <span class="sect-num">§ 01</span>
               <h2 class="sect-title">Briefing Summary</h2>
-              <span class="sect-tag"><span class="w-1.5 h-1.5 rounded-full bg-accent inline-block" /> AI-generated</span>
+              <AiLabel class="ml-auto" kind="generated" :date="article.analysis.createdAt" />
             </div>
             <div class="intel-card p-[22px] grid grid-cols-[52px_1fr] gap-4">
               <div class="summary-mark">NEWSAR · AI</div>
@@ -495,7 +503,7 @@ useHead({
             <div class="intel-sect-head">
               <span class="sect-num">§ 02</span>
               <h2 class="sect-title">Article analysis</h2>
-              <span class="sect-tag">Model · {{ article.classification.method || 'AI' }}</span>
+              <AiLabel class="ml-auto" kind="classified" />
             </div>
             <div class="analysis-grid grid grid-cols-4 bg-panel border border-rule">
               <!-- Framing -->
@@ -557,7 +565,7 @@ useHead({
             <div class="intel-sect-head">
               <span class="sect-num">§ 03</span>
               <h2 class="sect-title">Key claims</h2>
-              <span class="sect-tag">{{ article.claims.length }} extracted</span>
+              <AiLabel class="ml-auto" kind="extracted" :basis="`${article.claims.length} claims`" />
             </div>
             <div class="intel-card">
               <div v-for="(claim, idx) in article.claims" :key="claim.id" class="claims-grid grid grid-cols-[40px_1fr_160px] gap-4 px-[22px] py-[18px] border-t border-rule-soft first:border-t-0">
@@ -609,7 +617,7 @@ useHead({
             <div class="intel-sect-head">
               <span class="sect-num">§ 05</span>
               <h2 class="sect-title">Entities</h2>
-              <span class="sect-tag">{{ sortedEntities.length }} identified</span>
+              <AiLabel class="ml-auto" kind="extracted" :basis="`${sortedEntities.length} entities`" />
             </div>
             <div class="intel-card">
               <!-- Legend -->
@@ -680,7 +688,7 @@ useHead({
             <div class="intel-sect-head">
               <span class="sect-num">§ 06</span>
               <h2 class="sect-title">Keywords &amp; salience</h2>
-              <span class="sect-tag">{{ article.keywords.length }} terms</span>
+              <AiLabel class="ml-auto" kind="extracted" :basis="`${article.keywords.length} terms`" />
             </div>
             <div class="intel-card p-[22px]">
               <div class="kw-rows grid grid-cols-2 gap-x-10 gap-y-2">
@@ -695,19 +703,17 @@ useHead({
             </div>
           </section>
 
-          <!-- §07 TOPIC CONNECTIONS -->
-          <section v-if="article.keywords?.length > 0" class="intel-sect">
+          <!-- §07 ENTITY CONNECTIONS -->
+          <section v-if="article.entities?.length > 1" class="intel-sect">
             <div class="intel-sect-head">
               <span class="sect-num">§ 07</span>
-              <h2 class="sect-title">Topic connections</h2>
-              <span class="sect-tag">Interactive graph</span>
+              <h2 class="sect-title">Connections</h2>
+              <span class="sect-tag">Who appears together in the news</span>
             </div>
             <div class="intel-card p-[22px]">
-              <TopicNetworkGraph
-                :keywords="article.keywords"
-                :entities="article.entities"
-              />
-              <div class="flex flex-wrap gap-[5px] mt-4 pt-4 border-t border-rule-soft">
+              <ArticleEntityNetwork :article-id="articleId" />
+              <div v-if="article.keywords?.length" class="flex flex-wrap items-center gap-[5px] mt-4 pt-4 border-t border-rule-soft">
+                <span class="font-mono text-[10px] tracking-widest uppercase text-ink-4 mr-2">Explore full graph</span>
                 <NuxtLink
                   v-for="(keyword, idx) in article.keywords.slice(0, 10)"
                   :key="idx"
@@ -725,7 +731,7 @@ useHead({
 
           <!-- SENTIMENT -->
           <div v-if="article.analysis?.sentiment != null" class="intel-card">
-            <div class="intel-card-hd"><h3 class="font-mono text-[10px] font-semibold tracking-widest uppercase text-ink m-0">Sentiment</h3><span class="font-mono text-[10px] text-ink-3 tracking-wider uppercase">Overall tone</span></div>
+            <div class="intel-card-hd"><h3 class="font-mono text-[10px] font-semibold tracking-widest uppercase text-ink m-0">Sentiment</h3><AiLabel kind="classified" /></div>
             <div class="intel-card-bd">
               <div class="flex items-baseline gap-3 mb-3">
                 <div class="font-mono text-2xl font-semibold" :class="{ 'text-intel-red': getSentimentColor(article.analysis.sentiment) === 'neg', 'text-intel-green': getSentimentColor(article.analysis.sentiment) === 'pos', 'text-ink-3': getSentimentColor(article.analysis.sentiment) === 'neu' }">
@@ -759,9 +765,21 @@ useHead({
                 </span>
               </div>
               <div class="px-[22px]">
-                <div v-if="article.classification?.politicalBias != null" class="detail-row">
-                  <span class="text-ink-3">Political lean</span>
+                <div v-if="article.feedLeanApplicable === false" class="detail-row" :title="NOT_RATED_EXPLANATION">
+                  <span class="text-ink-3">Outlet lean</span>
+                  <b class="text-ink font-semibold">Not rated</b>
+                </div>
+                <div v-else-if="article.classification?.politicalBias != null" class="detail-row" :title="outletTagTitle">
+                  <span class="text-ink-3">Outlet lean</span>
                   <b class="text-ink font-semibold">{{ getBiasLabel(article.classification.politicalBias) }}</b>
+                </div>
+                <div v-if="article.feedOwnership" class="detail-row">
+                  <span class="text-ink-3">Ownership</span>
+                  <b class="text-ink font-semibold">{{ getOwnershipLabel(article.feedOwnership) }}</b>
+                </div>
+                <div v-if="article.feedCountry" class="detail-row">
+                  <span class="text-ink-3">Country</span>
+                  <b class="text-ink font-semibold">{{ getCountryName(article.feedCountry) }}</b>
                 </div>
                 <div v-if="article.classification?.confidence" class="detail-row">
                   <span class="text-ink-3">Confidence</span>

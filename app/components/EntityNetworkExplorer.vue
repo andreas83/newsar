@@ -14,6 +14,13 @@ const entityTypeDefs = [
   { type: 'topic', label: 'Topic', color: '#14b8a6' },
 ]
 
+const layoutOptions = [
+  { key: 'force', label: 'Force', icon: 'i-heroicons-sparkles' },
+  { key: 'radial', label: 'Radial', icon: 'i-heroicons-sun' },
+  { key: 'hierarchical', label: 'Hub', icon: 'i-heroicons-share' },
+] as const
+type Layout = typeof layoutOptions[number]['key']
+
 const timeWindows = [
   { label: '7d', value: 7 },
   { label: '30d', value: 30 },
@@ -36,6 +43,12 @@ const loading = ref(false)
 const rawData = ref<GraphData | null>(null)
 const selection = ref<NetworkSelection | null>(null)
 const hasExplored = ref(false)
+const selectedLayout = ref<Layout>('force')
+
+// The network can be re-centered on any node; the page's entity is the origin
+const center = ref<{ id: number; type: string; name: string | null }>({ id: props.entityId, type: props.entityType, name: null })
+const originName = ref<string | null>(null)
+const isRecentered = computed(() => center.value.id !== props.entityId)
 
 // Fullscreen & sizing
 const explorerSection = ref<HTMLElement | null>(null)
@@ -111,8 +124,8 @@ async function fetchData() {
   try {
     const result = await $fetch<GraphData & { meta?: any }>('/api/network/entities', {
       query: {
-        entityType: props.entityType,
-        centerEntity: props.entityId,
+        entityType: center.value.type,
+        centerEntity: center.value.id,
         timeWindow: timeWindow.value,
         minWeight: minWeight.value,
         limit: maxNodes.value,
@@ -120,6 +133,9 @@ async function fetchData() {
     })
     if (result.nodes?.length > 0) {
       rawData.value = result
+      const c = result.nodes.find(n => n.id === center.value.id)
+      if (c) center.value.name = c.name
+      if (!isRecentered.value && c) originName.value = c.name
     } else {
       rawData.value = { nodes: [], edges: [] }
     }
@@ -140,6 +156,26 @@ function toggleFullscreen() {
     document.exitFullscreen().catch(() => {})
   }
 }
+
+function recenterOn(node: GraphNode) {
+  center.value = { id: node.id, type: node.type, name: node.name }
+  selection.value = null
+  fetchData()
+}
+
+function resetCenter() {
+  center.value = { id: props.entityId, type: props.entityType, name: originName.value }
+  selection.value = null
+  fetchData()
+}
+
+// Same component instance is reused when navigating between entity pages
+watch(() => props.entityId, () => {
+  originName.value = null
+  center.value = { id: props.entityId, type: props.entityType, name: null }
+  selection.value = null
+  fetchData()
+})
 
 // Double-click (or the panel button) opens the entity page
 function handleNodeClick(node: GraphNode) {
@@ -168,6 +204,18 @@ function onKeydown(event: KeyboardEvent) {
   }
 
   switch (event.key) {
+    case '1':
+      event.preventDefault()
+      selectedLayout.value = 'force'
+      break
+    case '2':
+      event.preventDefault()
+      selectedLayout.value = 'radial'
+      break
+    case '3':
+      event.preventDefault()
+      selectedLayout.value = 'hierarchical'
+      break
     case '+':
     case '=':
       event.preventDefault()
@@ -247,8 +295,34 @@ function onFullscreenChange() {
             {{ visibleStats.visibleNodes }} entities, {{ visibleStats.visibleEdges }} links
           </span>
         </div>
-        <button class="inline-fullscreen-btn" title="Explore fullscreen" @click="toggleFullscreen">
-          <span class="i-heroicons-arrows-pointing-out w-4 h-4" />
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <div class="layout-pills" role="group" aria-label="Layout">
+            <button
+              v-for="opt in layoutOptions"
+              :key="opt.key"
+              class="layout-pill"
+              :class="{ 'layout-pill-active': selectedLayout === opt.key }"
+              :title="`${opt.label} layout`"
+              :aria-pressed="selectedLayout === opt.key"
+              @click="selectedLayout = opt.key"
+            >
+              <span :class="opt.icon" class="w-3 h-3" />
+              <span class="layout-pill-label">{{ opt.label }}</span>
+            </button>
+          </div>
+          <button class="inline-fullscreen-btn" title="Explore fullscreen" @click="toggleFullscreen">
+            <span class="i-heroicons-arrows-pointing-out w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      <!-- Recentered banner -->
+      <div v-if="isRecentered" class="recenter-bar">
+        <span class="i-heroicons-viewfinder-circle w-3.5 h-3.5 flex-shrink-0" />
+        <span class="truncate">Centered on <strong>{{ center.name }}</strong></span>
+        <button class="recenter-back" @click="resetCenter">
+          <span class="i-heroicons-arrow-uturn-left w-3 h-3" />
+          Back to {{ originName || 'this entity' }}
         </button>
       </div>
 
@@ -277,7 +351,8 @@ function onFullscreenChange() {
           :width="graphContainerWidth"
           :height="460"
           :show-legend="false"
-          :highlight-node-id="entityId"
+          :layout="selectedLayout"
+          :highlight-node-id="center.id"
           @node-click="handleNodeClick"
           @node-select="handleNodeSelect"
           @update:visible-stats="handleVisibleStats"
@@ -290,7 +365,20 @@ function onFullscreenChange() {
           @focus="graphRef?.focusNode($event)"
           @open="handleNodeClick"
           @close="graphRef?.clearFocus()"
-        />
+        >
+          <template #actions="{ node }">
+            <Button
+              v-if="node.id !== center.id"
+              variant="outline"
+              color="gray"
+              size="sm"
+              block
+              @click="recenterOn(node)"
+            >
+              Center network on this
+            </Button>
+          </template>
+        </NetworkFocusPanel>
       </div>
       <div v-else-if="!loading" class="flex items-center justify-center h-[460px] text-ink-4">
         <div class="text-center">
@@ -329,7 +417,8 @@ function onFullscreenChange() {
           :data="rawData!"
           :height="windowHeight"
           :show-legend="false"
-          :highlight-node-id="entityId"
+          :layout="selectedLayout"
+          :highlight-node-id="center.id"
           :search-highlight="searchHighlight"
           :show-minimap="showMinimap"
           @node-click="handleNodeClick"
@@ -342,7 +431,20 @@ function onFullscreenChange() {
           @focus="graphRef?.focusNode($event)"
           @open="handleNodeClick"
           @close="graphRef?.clearFocus()"
-        />
+        >
+          <template #actions="{ node }">
+            <Button
+              v-if="node.id !== center.id"
+              variant="outline"
+              color="gray"
+              size="sm"
+              block
+              @click="recenterOn(node)"
+            >
+              Center network on this
+            </Button>
+          </template>
+        </NetworkFocusPanel>
       </template>
 
       <!-- ===== Floating Toolbar (top center) ===== -->
@@ -364,6 +466,26 @@ function onFullscreenChange() {
               />
               <span class="type-toggle-label">{{ et.label }}</span>
               <span class="type-toggle-count">{{ et.count }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="toolbar-sep" />
+
+        <!-- Layout switcher -->
+        <div class="toolbar-section">
+          <div class="layout-pills" role="group" aria-label="Layout">
+            <button
+              v-for="opt in layoutOptions"
+              :key="opt.key"
+              class="layout-pill"
+              :class="{ 'layout-pill-active': selectedLayout === opt.key }"
+              :title="`${opt.label} layout (${layoutOptions.indexOf(opt) + 1})`"
+              :aria-pressed="selectedLayout === opt.key"
+              @click="selectedLayout = opt.key"
+            >
+              <span :class="opt.icon" class="w-3 h-3" />
+              <span class="layout-pill-label">{{ opt.label }}</span>
             </button>
           </div>
         </div>
@@ -449,6 +571,16 @@ function onFullscreenChange() {
         </div>
       </div>
 
+      <!-- Recentered chip (top-left) -->
+      <div v-if="isRecentered" class="recenter-bar recenter-floating">
+        <span class="i-heroicons-viewfinder-circle w-3.5 h-3.5 flex-shrink-0" />
+        <span class="truncate">Centered on <strong>{{ center.name }}</strong></span>
+        <button class="recenter-back" @click="resetCenter">
+          <span class="i-heroicons-arrow-uturn-left w-3 h-3" />
+          Back to {{ originName || 'this entity' }}
+        </button>
+      </div>
+
       <!-- ===== Stats watermark (bottom-left) ===== -->
       <div class="stats-watermark" v-if="visibleStats">
         <span v-if="visibleStats">{{ visibleStats.visibleNodes }} nodes</span>
@@ -489,6 +621,7 @@ function onFullscreenChange() {
       <div class="shortcuts-hint">
         <span>+/-</span> zoom
         <span class="ml-2">0</span> fit
+        <span class="ml-2">1-3</span> layout
         <span class="ml-2">/</span> search
         <span class="ml-2">Esc</span> exit
       </div>
@@ -678,6 +811,66 @@ function onFullscreenChange() {
 .layout-pill-active {
   background: var(--color-accent, #3b82f6) !important;
   color: #fff !important;
+}
+
+.layout-pill-label {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .layout-pill-label {
+    display: inline;
+  }
+}
+
+/* --- Recentered banner --- */
+.recenter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 5px 8px 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--color-ink-2);
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule-soft);
+}
+
+.recenter-bar strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.recenter-floating {
+  position: absolute;
+  top: 60px;
+  left: 12px;
+  z-index: 20;
+  margin: 0;
+  max-width: calc(100% - 24px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.recenter-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--color-ink-2);
+  background: var(--color-paper);
+  border: 1px solid var(--color-rule);
+  cursor: pointer;
+}
+
+.recenter-back:hover {
+  color: var(--color-ink);
+  border-color: var(--color-ink-4);
 }
 
 /* Type toggles */

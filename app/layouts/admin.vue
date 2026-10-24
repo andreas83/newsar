@@ -10,6 +10,7 @@ watch(() => route.path, () => {
 
 const links = [
   { label: 'Dashboard', icon: 'i-heroicons-chart-bar', to: '/admin' },
+  { label: 'Visitors', icon: 'i-heroicons-chart-pie', to: '/admin/analytics' },
   { label: 'Feeds', icon: 'i-heroicons-rss', to: '/admin/feeds' },
   { label: 'Entities', icon: 'i-heroicons-user-group', to: '/admin/entities' },
   { label: 'Network', icon: 'i-heroicons-squares-plus', to: '/admin/network' },

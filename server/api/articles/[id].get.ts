@@ -28,6 +28,9 @@ export default defineEventHandler(async (event) => {
         feedId: articles.feedId,
         feedName: feeds.name,
         feedBias: feeds.knownBias,
+        feedOwnership: feeds.ownership,
+        feedCountry: feeds.country,
+        feedLeanApplicable: feeds.leanApplicable,
         imageUrl: articles.imageUrl,
         imageLocalPath: articles.imageLocalPath,
         imageFetchStatus: articles.imageFetchStatus,
@@ -147,14 +150,6 @@ export default defineEventHandler(async (event) => {
     // Calculate content length category
     const contentLength = wordCount < 300 ? 'short' : wordCount < 800 ? 'medium' : 'long'
 
-    // Calculate quality score (0-1 composite)
-    const qualityScore = [
-      classification ? 0.25 : 0,
-      analysis?.summary ? 0.25 : 0,
-      articleEntityLinks.length > 0 ? 0.25 : 0,
-      articleKeywords.length > 0 ? 0.25 : 0,
-    ].reduce((a, b) => a + b, 0)
-
     return {
       ...article,
       classification,
@@ -167,7 +162,6 @@ export default defineEventHandler(async (event) => {
       // Calculated metrics
       readingTimeMinutes,
       contentLength,
-      qualityScore,
       wordCount,
     }
   } catch (error) {

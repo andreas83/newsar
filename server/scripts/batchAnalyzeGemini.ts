@@ -26,10 +26,11 @@ async function batchAnalyzeGemini() {
   const db = getDatabase()
   const limit = parseInt(process.argv[2]) || 500
   const model = getDefaultBatchModel()
+  const summaryModel = process.env.GEMINI_SUMMARY_MODEL || model
 
   console.log(`\n🔬 Batch Analysis (Gemini Batch API)`)
   console.log(`   Limit: ${limit} articles`)
-  console.log(`   Model: ${model}\n`)
+  console.log(`   Model: ${model} (summaries: ${summaryModel})\n`)
 
   try {
     // 1. Query articles pending analysis (grouped but not yet analyzed)
@@ -121,6 +122,7 @@ async function batchAnalyzeGemini() {
     async function submitAndExtract(
       requests: any[],
       displayName: string,
+      model: string,
     ): Promise<{ index: number; text?: string; error?: string }[]> {
       try {
         const job = await submitBatch(requests, displayName, model)
@@ -140,9 +142,9 @@ async function batchAnalyzeGemini() {
 
     // Submit all three — they run in parallel
     ;[keywordResults, summaryResults, sentimentResults] = await Promise.all([
-      submitAndExtract(keywordRequests, `keyword-extraction-${timestamp}`),
-      submitAndExtract(summaryRequests, `summary-generation-${timestamp}`),
-      submitAndExtract(sentimentRequests, `sentiment-analysis-${timestamp}`),
+      submitAndExtract(keywordRequests, `keyword-extraction-${timestamp}`, model),
+      submitAndExtract(summaryRequests, `summary-generation-${timestamp}`, summaryModel),
+      submitAndExtract(sentimentRequests, `sentiment-analysis-${timestamp}`, model),
     ])
 
     const batchDuration = ((Date.now() - startTime) / 1000).toFixed(1)

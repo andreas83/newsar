@@ -35,7 +35,8 @@ function formatDate(date: string | Date | null) {
 const activeSources = computed(() => sources.value?.filter(s => s.isActive === 1) || [])
 const inactiveSources = computed(() => sources.value?.filter(s => s.isActive === 0) || [])
 
-// Group by bias
+// Group by bias. Outlets marked lean_applicable = false go in their own group
+// instead of being forced onto the left–right scale.
 const sourcesByBias = computed(() => {
   const grouped: Record<string, any[]> = {
     left: [],
@@ -43,11 +44,14 @@ const sourcesByBias = computed(() => {
     center: [],
     centerRight: [],
     right: [],
+    notRated: [],
     unknown: [],
   }
 
   activeSources.value.forEach(source => {
-    if (source.knownBias === null) {
+    if (source.leanApplicable === false) {
+      grouped.notRated.push(source)
+    } else if (source.knownBias === null) {
       grouped.unknown.push(source)
     } else if (source.knownBias <= -0.6) {
       grouped.left.push(source)
@@ -64,6 +68,14 @@ const sourcesByBias = computed(() => {
 
   return grouped
 })
+
+const sourceGroups = computed(() => [
+  { key: 'left', title: 'Left-Leaning Sources', bar: 'bg-blue-500', badge: 'blue' as const, sources: [...sourcesByBias.value.left, ...sourcesByBias.value.centerLeft] },
+  { key: 'center', title: 'Center Sources', bar: 'bg-ink-4', badge: 'gray' as const, sources: sourcesByBias.value.center },
+  { key: 'right', title: 'Right-Leaning Sources', bar: 'bg-red-500', badge: 'red' as const, sources: [...sourcesByBias.value.centerRight, ...sourcesByBias.value.right] },
+  { key: 'notRated', title: 'Not Rated on Left–Right', bar: 'bg-intel-violet', badge: 'purple' as const, sources: sourcesByBias.value.notRated, note: NOT_RATED_EXPLANATION },
+  { key: 'unknown', title: 'Other Sources', bar: 'bg-paper-2', badge: 'gray' as const, sources: sourcesByBias.value.unknown },
+].filter(group => group.sources.length > 0))
 </script>
 
 <template>
@@ -80,7 +92,7 @@ const sourcesByBias = computed(() => {
             along with their political leanings and article counts.
           </p>
 
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-4 text-center">
             <div>
               <div class="text-3xl font-bold text-accent">{{ activeSources.length }}</div>
               <div class="text-sm text-ink-3">Active Sources</div>
@@ -96,6 +108,10 @@ const sourcesByBias = computed(() => {
             <div>
               <div class="text-3xl font-bold text-red-600">{{ sourcesByBias.centerRight.length + sourcesByBias.right.length }}</div>
               <div class="text-sm text-ink-3">Right-Leaning</div>
+            </div>
+            <div>
+              <div class="text-3xl font-bold text-intel-violet">{{ sourcesByBias.notRated.length }}</div>
+              <div class="text-sm text-ink-3">Not Rated</div>
             </div>
           </div>
         </div>
@@ -140,17 +156,17 @@ const sourcesByBias = computed(() => {
     <section class="py-12">
       <Container>
         <div class="max-w-6xl mx-auto space-y-12">
-          <!-- Left Sources -->
-          <div v-if="sourcesByBias.left.length > 0 || sourcesByBias.centerLeft.length > 0">
-            <div class="flex items-center gap-3 mb-6">
-              <div class="h-1 w-12 bg-blue-500 rounded"></div>
-              <h2 class="text-2xl font-bold text-ink">Left-Leaning Sources</h2>
-              <Badge color="blue" size="lg">{{ sourcesByBias.left.length + sourcesByBias.centerLeft.length }}</Badge>
+          <div v-for="group in sourceGroups" :key="group.key">
+            <div class="flex items-center gap-3 mb-2">
+              <div class="h-1 w-12 rounded" :class="group.bar"></div>
+              <h2 class="text-2xl font-bold text-ink">{{ group.title }}</h2>
+              <Badge :color="group.badge" size="lg">{{ group.sources.length }}</Badge>
             </div>
+            <p v-if="group.note" class="text-sm text-ink-3 max-w-3xl">{{ group.note }}</p>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
               <Card
-                v-for="source in [...sourcesByBias.left, ...sourcesByBias.centerLeft]"
+                v-for="source in group.sources"
                 :key="source.id"
                 class="hover: transition-shadow"
               >
@@ -161,10 +177,11 @@ const sourcesByBias = computed(() => {
                       <p class="text-sm text-ink-3">{{ source.category || 'General News' }}</p>
                     </div>
                     <Badge
-                      :color="getBiasColor(source.knownBias)"
+                      :color="source.leanApplicable === false ? 'purple' : getBiasColor(source.knownBias)"
                       size="sm"
+                      :title="source.leanApplicable === false ? NOT_RATED_EXPLANATION : 'Outlet rating, applied to all of its articles'"
                     >
-                      {{ getBiasLabel(source.knownBias) }}
+                      {{ source.leanApplicable === false ? 'Not rated' : getBiasLabel(source.knownBias) }}
                     </Badge>
                   </div>
 
@@ -177,152 +194,17 @@ const sourcesByBias = computed(() => {
                       <div class="text-ink-3">Last Updated</div>
                       <div class="font-medium">{{ formatDate(source.lastFetchedAt) }}</div>
                     </div>
-                    <div>
+                    <div v-if="source.ownership">
+                      <div class="text-ink-3">Ownership</div>
+                      <div class="font-medium">{{ getOwnershipLabel(source.ownership) }}</div>
+                    </div>
+                    <div v-if="source.country">
+                      <div class="text-ink-3">Country</div>
+                      <div class="font-medium">{{ getCountryName(source.country) }}</div>
+                    </div>
+                    <div v-if="source.knownBias !== null && source.leanApplicable !== false">
                       <div class="text-ink-3">Bias Score</div>
-                      <div class="font-medium">{{ source.knownBias?.toFixed(2) || 'N/A' }}</div>
-                    </div>
-                    <div v-if="source.region">
-                      <div class="text-ink-3">Region</div>
-                      <div class="font-medium">{{ source.region }}</div>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            </div>
-          </div>
-
-          <!-- Center Sources -->
-          <div v-if="sourcesByBias.center.length > 0">
-            <div class="flex items-center gap-3 mb-6">
-              <div class="h-1 w-12 bg-paper-20 rounded"></div>
-              <h2 class="text-2xl font-bold text-ink">Center Sources</h2>
-              <Badge color="gray" size="lg">{{ sourcesByBias.center.length }}</Badge>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Card
-                v-for="source in sourcesByBias.center"
-                :key="source.id"
-                class="hover: transition-shadow"
-              >
-                <div class="space-y-3">
-                  <div class="flex items-start justify-between gap-4">
-                    <div class="flex-1">
-                      <h3 class="font-semibold text-lg text-ink">{{ source.name }}</h3>
-                      <p class="text-sm text-ink-3">{{ source.category || 'General News' }}</p>
-                    </div>
-                    <Badge
-                      :color="getBiasColor(source.knownBias)"
-                      size="sm"
-                    >
-                      {{ getBiasLabel(source.knownBias) }}
-                    </Badge>
-                  </div>
-
-                  <div class="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <div class="text-ink-3">Articles</div>
-                      <div class="font-medium">{{ source.articleCount }}</div>
-                    </div>
-                    <div>
-                      <div class="text-ink-3">Last Updated</div>
-                      <div class="font-medium">{{ formatDate(source.lastFetchedAt) }}</div>
-                    </div>
-                    <div>
-                      <div class="text-ink-3">Bias Score</div>
-                      <div class="font-medium">{{ source.knownBias?.toFixed(2) || 'N/A' }}</div>
-                    </div>
-                    <div v-if="source.region">
-                      <div class="text-ink-3">Region</div>
-                      <div class="font-medium">{{ source.region }}</div>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            </div>
-          </div>
-
-          <!-- Right Sources -->
-          <div v-if="sourcesByBias.right.length > 0 || sourcesByBias.centerRight.length > 0">
-            <div class="flex items-center gap-3 mb-6">
-              <div class="h-1 w-12 bg-red-500 rounded"></div>
-              <h2 class="text-2xl font-bold text-ink">Right-Leaning Sources</h2>
-              <Badge color="red" size="lg">{{ sourcesByBias.centerRight.length + sourcesByBias.right.length }}</Badge>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Card
-                v-for="source in [...sourcesByBias.centerRight, ...sourcesByBias.right]"
-                :key="source.id"
-                class="hover: transition-shadow"
-              >
-                <div class="space-y-3">
-                  <div class="flex items-start justify-between gap-4">
-                    <div class="flex-1">
-                      <h3 class="font-semibold text-lg text-ink">{{ source.name }}</h3>
-                      <p class="text-sm text-ink-3">{{ source.category || 'General News' }}</p>
-                    </div>
-                    <Badge
-                      :color="getBiasColor(source.knownBias)"
-                      size="sm"
-                    >
-                      {{ getBiasLabel(source.knownBias) }}
-                    </Badge>
-                  </div>
-
-                  <div class="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <div class="text-ink-3">Articles</div>
-                      <div class="font-medium">{{ source.articleCount }}</div>
-                    </div>
-                    <div>
-                      <div class="text-ink-3">Last Updated</div>
-                      <div class="font-medium">{{ formatDate(source.lastFetchedAt) }}</div>
-                    </div>
-                    <div>
-                      <div class="text-ink-3">Bias Score</div>
-                      <div class="font-medium">{{ source.knownBias?.toFixed(2) || 'N/A' }}</div>
-                    </div>
-                    <div v-if="source.region">
-                      <div class="text-ink-3">Region</div>
-                      <div class="font-medium">{{ source.region }}</div>
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            </div>
-          </div>
-
-          <!-- Unknown Bias Sources -->
-          <div v-if="sourcesByBias.unknown.length > 0">
-            <div class="flex items-center gap-3 mb-6">
-              <h2 class="text-xl font-semibold text-ink-3">Other Sources</h2>
-              <Badge color="gray" size="sm">{{ sourcesByBias.unknown.length }}</Badge>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Card
-                v-for="source in sourcesByBias.unknown"
-                :key="source.id"
-                class="hover: transition-shadow"
-              >
-                <div class="space-y-3">
-                  <div class="flex items-start justify-between gap-4">
-                    <div class="flex-1">
-                      <h3 class="font-semibold text-lg text-ink">{{ source.name }}</h3>
-                      <p class="text-sm text-ink-3">{{ source.category || 'General News' }}</p>
-                    </div>
-                    <Badge color="gray" size="sm">Unknown</Badge>
-                  </div>
-
-                  <div class="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <div class="text-ink-3">Articles</div>
-                      <div class="font-medium">{{ source.articleCount }}</div>
-                    </div>
-                    <div>
-                      <div class="text-ink-3">Last Updated</div>
-                      <div class="font-medium">{{ formatDate(source.lastFetchedAt) }}</div>
+                      <div class="font-medium">{{ source.knownBias.toFixed(2) }}</div>
                     </div>
                   </div>
                 </div>

@@ -16,6 +16,7 @@ interface Story {
   name?: string | null
   representativeTitle?: string | null
   description?: string | null
+  summary?: string | null
   status?: string | null
   trendingScore?: number | null
   articleCount: number
@@ -33,6 +34,7 @@ interface Story {
   leftCount?: number | null
   centerCount?: number | null
   rightCount?: number | null
+  unratedCount?: number | null
   framingDistribution?: Record<string, number> | null
   avgSensationalism?: number | null
   avgFactuality?: number | null
@@ -110,7 +112,7 @@ function claimTypeColor(type: string | null) {
         <div v-if="story.imageLocalPath || story.imageUrl" class="flex-shrink-0">
           <img
             :src="story.imageLocalPath || story.imageUrl || undefined"
-            :alt="story.representativeTitle || story.name || ''"
+            :alt="story.name || story.representativeTitle || ''"
             class="w-full h-40 sm:w-32 sm:h-24 object-cover rounded-lg"
             @error="($event.target as HTMLElement)?.parentElement?.style.setProperty('display', 'none')"
           />
@@ -118,9 +120,12 @@ function claimTypeColor(type: string | null) {
 
         <div class="flex-1 min-w-0 space-y-1.5 sm:space-y-2">
           <h3 class="text-base sm:text-xl font-bold text-gray-900 dark:text-slate-100 line-clamp-3 sm:line-clamp-none">
-            {{ story.representativeTitle || story.name }}
+            {{ story.name || story.representativeTitle }}
           </h3>
-          <p v-if="story.topicLabel && story.topicLabel !== story.representativeTitle" class="text-xs sm:text-sm text-gray-500 dark:text-slate-400">
+          <p v-if="story.summary" class="font-serif text-[15px] sm:text-[16px] leading-relaxed text-ink-2 line-clamp-3">
+            {{ story.summary }}
+          </p>
+          <p v-else-if="story.topicLabel && story.topicLabel !== story.representativeTitle" class="text-xs sm:text-sm text-gray-500 dark:text-slate-400">
             {{ story.topicLabel }}
           </p>
           <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
@@ -179,7 +184,10 @@ function claimTypeColor(type: string | null) {
 
       <!-- Key Claims -->
       <div v-if="story.claims && story.claims.length > 0" class="space-y-2">
-        <div class="text-sm font-medium text-gray-700 dark:text-slate-300">Key Claims</div>
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-medium text-gray-700 dark:text-slate-300">Key Claims</span>
+          <AiLabel kind="extracted" />
+        </div>
         <div class="space-y-1.5">
           <div
             v-for="(claim, ci) in story.claims"
@@ -202,7 +210,10 @@ function claimTypeColor(type: string | null) {
 
       <!-- Framing Distribution -->
       <div v-if="story.framingDistribution && Object.keys(story.framingDistribution).length > 0" class="space-y-2">
-        <div class="text-sm font-medium text-gray-700 dark:text-slate-300">Coverage Framing</div>
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-medium text-gray-700 dark:text-slate-300">Coverage Framing</span>
+          <AiLabel kind="classified" />
+        </div>
         <div class="flex flex-wrap gap-1.5">
           <span
             v-for="[framing, count] in Object.entries(story.framingDistribution as Record<string, number>).filter(([k]) => k !== 'unclassified').sort(([,a], [,b]) => (b as number) - (a as number)).slice(0, 4)"
@@ -215,7 +226,7 @@ function claimTypeColor(type: string | null) {
         </div>
       </div>
       <!-- Fallback to bias distribution -->
-      <div v-else-if="story.leftCount || story.centerCount || story.rightCount" class="space-y-2">
+      <div v-else-if="story.leftCount || story.centerCount || story.rightCount || story.unratedCount" class="space-y-2">
         <div class="text-sm font-medium text-gray-700 dark:text-slate-300">Coverage by Political Leaning</div>
         <div class="flex gap-2">
           <div
@@ -238,6 +249,14 @@ function claimTypeColor(type: string | null) {
           >
             <div class="text-xs text-red-600 dark:text-red-400">Right</div>
             <div class="font-semibold text-red-900 dark:text-red-200">{{ story.rightCount }}</div>
+          </div>
+          <div
+            v-if="story.unratedCount"
+            class="flex-1 bg-purple-100 dark:bg-purple-900/30 rounded px-3 py-2 text-center"
+            :title="NOT_RATED_EXPLANATION"
+          >
+            <div class="text-xs text-purple-600 dark:text-purple-400">Not rated</div>
+            <div class="font-semibold text-purple-900 dark:text-purple-200">{{ story.unratedCount }}</div>
           </div>
         </div>
       </div>

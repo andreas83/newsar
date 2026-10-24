@@ -69,6 +69,21 @@
             <li><strong>Far Right:</strong> +0.6 to +1.0</li>
           </ul>
 
+          <h3 id="outlet-profile">Ownership, Country, and Outlets We Don't Rate</h3>
+          <p>
+            Lean ratings belong to the outlet, not to individual articles: every article from an outlet
+            carries that outlet's rating. Alongside lean, each outlet is described by its
+            <strong>ownership</strong> (privately owned, public broadcaster, state media, nonprofit, or
+            trust-owned) and its <strong>home country</strong>.
+          </p>
+          <p>
+            A left&ndash;right scale describes party politics in Western democracies. It doesn't fit
+            state media, or outlets whose home politics don't map onto it, so we don't force them onto
+            it. Those outlets are marked <strong>Not rated</strong> and shown with ownership and country
+            instead (for example &ldquo;State media &middot; Qatar&rdquo;). In story coverage they are
+            counted separately rather than as center.
+          </p>
+
           <h3>Classification Methods</h3>
 
           <h4>1. Rule-Based Classification</h4>
@@ -188,6 +203,26 @@
             helping you understand the emotional framing of the coverage.
           </p>
 
+          <!-- AI content -->
+          <h2 id="ai-content">AI-Generated Content</h2>
+          <p>
+            Anything a language model produced on this site carries a label, so you can tell it apart
+            from the reporting it is based on:
+          </p>
+          <ul>
+            <li><strong>AI-generated:</strong> text the model wrote, such as article summaries, story
+              summaries, and entity descriptions. Where shown, the date is when it was generated.</li>
+            <li><strong>AI-extracted:</strong> items the model picked out of article text, such as
+              claims, people, places, organizations, and keywords.</li>
+            <li><strong>AI-classified:</strong> labels and scores the model assigned, such as framing,
+              article type, sensationalism, and sentiment.</li>
+          </ul>
+          <p>
+            No editor reviews this output before it is published. Models can misread an article, miss
+            context, or state things more confidently than the sources do. Treat labelled content as a
+            guide to the coverage, and follow the links to the original articles before relying on it.
+          </p>
+
           <!-- Quality -->
           <h2>Quality &amp; Transparency</h2>
 
@@ -206,6 +241,7 @@
             <li><strong>Rule-based:</strong> Known source with established rating</li>
             <li><strong>AI-analyzed:</strong> Content-based analysis for unknown sources</li>
             <li><strong>Hybrid:</strong> Combination of both methods</li>
+            <li><strong>Not rated:</strong> Outlet is not rated on the left&ndash;right scale (see above)</li>
           </ul>
 
           <h3>Continuous Improvement</h3>

@@ -15,22 +15,17 @@ export default defineEventHandler(async (event) => {
         category: feeds.category,
         knownBias: feeds.knownBias,
         region: feeds.region,
+        publisher: feeds.publisher,
+        ownership: feeds.ownership,
+        country: feeds.country,
+        leanApplicable: feeds.leanApplicable,
         isActive: feeds.isActive,
         lastFetchedAt: feeds.lastFetchedAt,
         articleCount: sql<number>`COUNT(${articles.id})`,
       })
       .from(feeds)
       .leftJoin(articles, eq(feeds.id, articles.feedId))
-      .groupBy(
-        feeds.id,
-        feeds.name,
-        feeds.url,
-        feeds.category,
-        feeds.knownBias,
-        feeds.region,
-        feeds.isActive,
-        feeds.lastFetchedAt
-      )
+      .groupBy(feeds.id)
       .orderBy(desc(sql`COUNT(${articles.id})`))
 
     return sources

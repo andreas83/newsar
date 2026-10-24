@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Newsar** is an AI-powered news aggregation platform that collects RSS feeds, classifies articles using local AI (Ollama via RunPod), generates embeddings for semantic similarity, clusters articles into stories, and provides multi-perspective news analysis.
+**Newsar** is an AI-powered news aggregation platform that collects RSS feeds, classifies articles using an LLM (Gemini 2.5 Flash-Lite, local Ollama fallback), generates embeddings for semantic similarity, clusters articles into stories, and provides multi-perspective news analysis.
 
 **Vision:** Combat disinformation by providing comprehensive news coverage from multiple perspectives, pre-classified by political bias, enabling users to form evidence-based judgments.
 
@@ -27,7 +27,7 @@ Articles   Full Content      Language/Bias/    Similarity   Story Groups  Keywor
    - Image extraction with local storage
 
 2. **ML Pipeline** (`server/services/`)
-   - **Classification**: Hybrid approach (rule-based for known sources + Ollama for unknown)
+   - **Classification**: Hybrid approach (rule-based for known sources + LLM for unknown)
    - **Embeddings**: nomic-embed-text (768 dimensions) via Ollama
    - **Clustering**: DBSCAN-like algorithm groups similar articles into "stories"
    - **Analysis**: Keywords, summaries (3 lengths), sentiment, entity summaries
@@ -221,21 +221,39 @@ See `TRADING_SIGNALS_ASSESSMENT.md` for detailed performance analysis.
 
 ## Key Technical Details
 
-### Ollama Configuration
+### LLM Configuration
 
-**Production uses RunPod:**
-- Base URL: `https://gotobumnnlizii-11434.proxy.runpod.net`
-- Chat model: `qwen2.5:14b-instruct-q5_K_M` (for classification, analysis, summaries)
-- Embedding model: `nomic-embed-text` (768 dimensions)
+**Production setup (as of 2026-10-24):**
+- Classification layer (entities, framing, keywords, sentiment): **Gemini `gemini-2.5-flash-lite`** (`GEMINI_MODEL`), because `FORCE_GEMINI=true`
+- Summarization layer (article summaries, story summaries/headlines, story narratives): **Gemini `gemini-2.5-flash`** (`GEMINI_SUMMARY_MODEL`, falls back to `GEMINI_MODEL`; resolved by `getSummaryModel()` in `server/utils/gemini.ts`). Chosen on 2026-10-24 after a 4-model test: same classification quality on the lite model, but Flash summaries were more accurate and its narratives caught outlet perspective differences that Flash-Lite missed.
+- Gemini batch jobs: `GEMINI_BATCH_MODEL` (default `gemini-2.5-flash-lite`, `server/utils/geminiBatch.ts`)
+- Embeddings: `nomic-embed-text` (768 dimensions) on local Ollama (`http://localhost:11434`)
+- Local chat fallback: `llama3.2:3b` on local Ollama
+- RunPod: **disabled** (`RUNPOD_ENABLED=false`)
 
-**Environment variables** (`.env` or `ecosystem.config.cjs`):
+**Provider fallback chain** (`generateChatCompletion` / JSON variant in `server/utils/ollama.ts`):
+1. Gemini, if `FORCE_GEMINI=true` and a Gemini key is set
+2. OpenRouter, if an OpenRouter key is set (currently none, so this step is skipped)
+3. Ollama primary URL, then fallback URL
+
+If Gemini fails (for example, when credits run out), jobs silently drop to `llama3.2:3b`, which gives noticeably weaker output. Check `[LLM] ✗ Gemini API failed` in the logs.
+
+**Environment variables** (`.env` and `ecosystem.config.cjs`; keep them in sync):
 ```bash
-OLLAMA_BASE_URL=https://gotobumnnlizii-11434.proxy.runpod.net
-OLLAMA_CHAT_MODEL=qwen2.5:14b-instruct-q5_K_M
+FORCE_GEMINI=true
+GEMINI_MODEL=gemini-2.5-flash-lite
+GEMINI_SUMMARY_MODEL=gemini-2.5-flash
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=llama3.2:3b
 OLLAMA_EMBED_MODEL=nomic-embed-text
+RUNPOD_ENABLED=false
 ```
 
-### RunPod On-Demand Pod Management (NEW)
+`server/utils/claude.ts` also exists (`CLAUDE_MODEL`, default `claude-3-5-haiku-20241022`), but it is commented out in `.env`.
+
+### RunPod On-Demand Pod Management (currently disabled)
+
+> RunPod is turned off in production (`RUNPOD_ENABLED=false`). The section below describes the system for when it is turned back on. The `qwen2.5:14b` model it references was the RunPod chat model and is not in use now.
 
 **Cost Optimization System** for AI processing that automatically manages cloud GPU pods based on workload demand, reducing costs by 70-80% compared to always-on infrastructure.
 
@@ -527,10 +545,12 @@ Status fields:
 | Task | Time/Article | Concurrency | Model |
 |------|-------------|-------------|-------|
 | Content Extraction | 3-5s | 3-5 | Puppeteer |
-| Classification | 25-30s | 1-2 | qwen2.5:14b |
+| Classification | 25-30s | 1-2 | qwen2.5:14b (RunPod era) |
 | Embedding | 5s | 3-5 | nomic-embed-text |
-| Analysis | 35s | 1 | qwen2.5:14b |
-| Entity Summary | 10-15s | 1 | qwen2.5:14b |
+| Analysis | 35s | 1 | qwen2.5:14b (RunPod era) |
+| Entity Summary | 10-15s | 1 | qwen2.5:14b (RunPod era) |
+
+Timings were measured on RunPod qwen2.5:14b and have not been re-benchmarked on Gemini.
 
 ### Nitro Route Patterns
 
@@ -634,7 +654,7 @@ server/
 │   ├── batchAnalyze.ts
 │   ├── generateEntitySummaries.ts
 │   └── updateStoryTrending.ts
-└── utils/              # Ollama client, Redis, helpers
+└── utils/              # LLM clients (ollama.ts routes Gemini/OpenRouter/Ollama), Redis, helpers
 ```
 
 ## Entity Summary Generation
@@ -672,6 +692,20 @@ Stories have dynamic trending scores based on:
 - Source diversity (number of unique feeds)
 
 Updated by `server/scripts/updateStoryTrending.ts` (should be run periodically).
+
+### Story Identity & Narratives
+
+- Reclustering (`npm run test:cluster 0.5 2`, cron every 4h) keeps a story's ID when a new cluster continues it; dissolved IDs get a row in `story_redirects` and `/stories/{old}` 301s to the successor. `--dry-run` reports kept/new/removed without writing. Never go back to delete-all: narratives, metrics and shared URLs hang off the ID.
+- Articles isolated by >14 days from the rest of their cluster are pruned after orphan assignment.
+- `npm run stories:narrate [limit]` (cron :30 every 4h) writes `story_narratives` (headline, lede, background, dated developments, per-outlet framing, agree/differ, open questions) with Gemini flash-lite from member article summaries, and copies headline/lede into `stories.name`/`stories.summary` for lists. Regenerates only when a story grows ≥20% (min 3 articles) or <70% of narrated articles remain. `--story id[,id] --dry-run` to test.
+- Story page `/stories/[id]` works without a narrative (day-by-day headlines, outlet headline comparison); "Related stories over time" links stories sharing ≥2 primary entities.
+
+### Visitor Statistics
+
+- Cookieless, first-party only: `app/plugins/analytics.client.ts` beacons to `POST /api/ping`, and the results are in `/admin/analytics` (API `server/api/admin/visitors.get.ts`). Tables `page_views` and `bot_hits_daily` (migration `0026_visitor_stats.sql`).
+- No IPs stored: `visitor_hash` = sha256(daily Redis salt `analytics:salt:YYYY-MM-DD`, 2-day TTL + IP + UA), so "visitors" is the sum of daily uniques.
+- Bot filter (`server/utils/visitorStats.ts`): bot UA list, Chrome >30 versions out of date, headless signals, per-visitor (150/day) and per-/24 (1000/day) caps. Flagged views keep a `bot_reason`. Only `bot_reason IS NULL AND engaged` counts as human (engaged = real interaction or 15s visible), which is what catches JS-running crawlers that use a normal Chrome UA.
+- Self-declared bots never run JS. `server/middleware/botHits.ts` counts their page requests into `bot_hits_daily` and deletes `page_views` older than 13 months.
 
 ### Priority Queue System
 
@@ -713,8 +747,8 @@ Images are downloaded and stored locally:
 - See `FUTURE_IMPROVEMENTS.md` for full roadmap
 
 **Architecture Decisions:**
-- Using cron over worker for scheduled tasks
-- Processing pipeline: cron-based batch scripts
+- Cron decides *when* work runs. `queue:classify` and `queue:analyze` only enqueue BullMQ jobs, and **`newsar-worker` does the processing**, so after changing LLM code or env, restart it (`pm2 restart ecosystem.config.cjs --only newsar-worker --update-env`)
+- `stories:narrate` and clustering (`test:cluster`) run their work directly inside the cron script, without the worker
 
 **Statistics:**
 - 2300+ entities extracted

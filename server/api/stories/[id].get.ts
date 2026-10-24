@@ -1,6 +1,6 @@
 import { getDatabase } from '~/server/database/db'
-import { stories, storyMembers, articles, classifications, feeds, storyCoverage, storyEntities, entities, analyses, keywords, articleClaims } from '~/server/database/schema'
-import { eq, desc, inArray, and, gte, lt } from 'drizzle-orm'
+import { stories, storyMembers, articles, classifications, feeds, storyCoverage, storyEntities, entities, analyses, articleClaims, storyNarratives, storyRedirects } from '~/server/database/schema'
+import { eq, desc, inArray, sql } from 'drizzle-orm'
 
 const FRAMING_DISPLAY: Record<string, string> = {
   economic_impact: 'Economic Impact',
@@ -17,230 +17,53 @@ const FRAMING_DISPLAY: Record<string, string> = {
   social_justice: 'Social Justice',
 }
 
-const FRAMING_COLORS: Record<string, string> = {
-  economic_impact: 'emerald',
-  human_rights: 'purple',
-  national_security: 'red',
-  public_health: 'teal',
-  environmental: 'green',
-  political_strategy: 'orange',
-  human_interest: 'pink',
-  legal_judicial: 'indigo',
-  technology: 'cyan',
-  conflict: 'rose',
-  diplomatic: 'blue',
-  social_justice: 'violet',
+/** Shortened outlet names for the narrow spots (chips, source lines) */
+function shortOutletName(name: string | null): string {
+  if (!name) return 'Unknown'
+  return name.replace(/\s+-\s+World( News)?$/i, '').replace(/\s+\(.*\)$/, '')
 }
 
-interface TimelineArticle {
-  id: number
-  title: string
-  url: string
-  feedName: string | null
-  publishedAt: Date | string | null
-  summary: string | null
-  sentiment: number | null
-  politicalBias: number | null
-  primaryFraming: string | null
-  sensationalism: number | null
-  factOpinionRatio: number | null
-  sourceCountCited: number | null
-  articleType: string | null
-  similarity: number | null
-  imageUrl: string | null
-  imageLocalPath: string | null
-  feedId: number
-}
+interface NarrativeDevelopment { date: string; text: string; articleIds: number[] }
+interface NarrativePerspective { outlet: string; feedIds: number[]; framing: string; articleIds: number[] }
 
-interface FramingGroup {
-  framing: string
-  displayName: string
-  color: string
-  articles: TimelineArticle[]
-  totalCount: number
-  avgSentiment: number | null
-}
-
-interface PeriodClaim {
-  claimText: string
-  attribution: string | null
-  claimType: string | null
-  confidence: number | null
-  articleId: number
-  articleTitle: string
-}
-
-interface TimelinePeriod {
-  periodStart: string
-  periodEnd: string
-  headline: string
-  totalArticles: number
-  sourceCount: number
-  topKeywords: { keyword: string; count: number; avgRelevance: number }[]
-  framingGroups: FramingGroup[]
-  claims: PeriodClaim[]
-}
-
-function computeBucketSize(spanMs: number): { type: '12h' | 'day' | 'week' | 'month'; ms: number } {
-  const days = spanMs / (1000 * 60 * 60 * 24)
-  if (days <= 3) return { type: '12h', ms: 12 * 60 * 60 * 1000 }
-  if (days <= 14) return { type: 'day', ms: 24 * 60 * 60 * 1000 }
-  if (days <= 90) return { type: 'week', ms: 7 * 24 * 60 * 60 * 1000 }
-  return { type: 'month', ms: 30 * 24 * 60 * 60 * 1000 }
-}
-
-function getBucketStart(date: Date, bucketType: string): Date {
-  const d = new Date(date)
-  if (bucketType === '12h') {
-    d.setMinutes(0, 0, 0)
-    d.setHours(d.getHours() < 12 ? 0 : 12)
-  } else if (bucketType === 'day') {
-    d.setHours(0, 0, 0, 0)
-  } else if (bucketType === 'week') {
-    d.setHours(0, 0, 0, 0)
-    const dayOfWeek = d.getDay()
-    d.setDate(d.getDate() - dayOfWeek)
-  } else {
-    d.setDate(1)
-    d.setHours(0, 0, 0, 0)
-  }
-  return d
-}
-
-function getBucketEnd(bucketStart: Date, bucketType: string): Date {
-  const d = new Date(bucketStart)
-  if (bucketType === '12h') {
-    d.setHours(d.getHours() + 12)
-  } else if (bucketType === 'day') {
-    d.setDate(d.getDate() + 1)
-  } else if (bucketType === 'week') {
-    d.setDate(d.getDate() + 7)
-  } else {
-    d.setMonth(d.getMonth() + 1)
-  }
-  return d
-}
-
-/** Select top N articles per group with source diversity */
-function selectTopArticles(articleList: TimelineArticle[], maxCount: number): TimelineArticle[] {
-  if (articleList.length <= maxCount) return articleList
-
-  const sorted = [...articleList].sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-  const selected: TimelineArticle[] = []
-  const usedFeeds = new Set<number>()
-
-  for (const article of sorted) {
-    if (selected.length >= maxCount) break
-    if (!usedFeeds.has(article.feedId)) {
-      selected.push(article)
-      usedFeeds.add(article.feedId)
-    }
-  }
-
-  if (selected.length < maxCount) {
-    for (const article of sorted) {
-      if (selected.length >= maxCount) break
-      if (!selected.find(s => s.id === article.id)) {
-        selected.push(article)
-      }
-    }
-  }
-
-  return selected
-}
-
-/** Group articles by framing and return sorted framing groups */
-function buildFramingGroups(articleList: TimelineArticle[], maxArticlesPerGroup: number = 3): FramingGroup[] {
-  const groupMap = new Map<string, TimelineArticle[]>()
-
-  for (const article of articleList) {
-    const framing = article.primaryFraming || 'unclassified'
-    if (!groupMap.has(framing)) {
-      groupMap.set(framing, [])
-    }
-    groupMap.get(framing)!.push(article)
-  }
-
-  const groups: FramingGroup[] = []
-
-  for (const [framing, articles] of groupMap) {
-    const topArticles = selectTopArticles(articles, maxArticlesPerGroup)
-    const withSentiment = articles.filter(a => a.sentiment !== null)
-    const avgSentiment = withSentiment.length > 0
-      ? withSentiment.reduce((sum, a) => sum + (a.sentiment || 0), 0) / withSentiment.length
-      : null
-
-    groups.push({
-      framing,
-      displayName: FRAMING_DISPLAY[framing] || framing.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-      color: FRAMING_COLORS[framing] || 'gray',
-      articles: topArticles,
-      totalCount: articles.length,
-      avgSentiment,
-    })
-  }
-
-  // Sort by count descending
-  groups.sort((a, b) => b.totalCount - a.totalCount)
-
-  return groups
-}
+const MAX_CLAIMS = 8
+const MAX_CHAPTERS = 8
 
 export default defineEventHandler(async (event) => {
   const db = getDatabase()
   const id = parseInt(event.context.params?.id || '0')
 
   if (!id) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: 'Story ID is required',
-    })
+    throw createError({ statusCode: 400, statusMessage: 'Story ID is required' })
   }
 
-  const query = getQuery(event)
-  const periodStart = query.periodStart as string | undefined
-  const periodEnd = query.periodEnd as string | undefined
-
   try {
-    // Get story
-    const [story] = await db
-      .select()
-      .from(stories)
-      .where(eq(stories.id, id))
-      .limit(1)
+    const [story] = await db.select().from(stories).where(eq(stories.id, id)).limit(1)
 
     if (!story) {
-      throw createError({
-        statusCode: 404,
-        statusMessage: 'Story not found',
-      })
+      // Dissolved during reclustering: point the page at its successor
+      const [redirect] = await db.select().from(storyRedirects).where(eq(storyRedirects.oldId, id)).limit(1)
+      if (redirect) return { redirectTo: redirect.newId }
+      throw createError({ statusCode: 404, statusMessage: 'Story not found' })
     }
 
-    // Get coverage data
-    const [coverage] = await db
-      .select()
-      .from(storyCoverage)
-      .where(eq(storyCoverage.storyId, id))
-      .limit(1)
-
-    // Get story entities
-    const storyEntityList = await db
-      .select({
-        id: entities.id,
-        name: entities.name,
-        type: entities.type,
-        relevance: storyEntities.relevance,
-        isPrimary: storyEntities.isPrimary,
-        articleCount: storyEntities.articleCount,
-      })
-      .from(storyEntities)
-      .innerJoin(entities, eq(storyEntities.entityId, entities.id))
-      .where(eq(storyEntities.storyId, id))
-      .orderBy(desc(storyEntities.relevance))
-
-    // If periodStart/periodEnd provided, return full articles for that period only
-    if (periodStart && periodEnd) {
-      const periodArticles = await db
+    const [[coverage], [narrative], storyEntityList, storyArticles] = await Promise.all([
+      db.select().from(storyCoverage).where(eq(storyCoverage.storyId, id)).limit(1),
+      db.select().from(storyNarratives).where(eq(storyNarratives.storyId, id)).limit(1),
+      db
+        .select({
+          id: entities.id,
+          name: entities.name,
+          type: entities.type,
+          slug: entities.slug,
+          relevance: storyEntities.relevance,
+          isPrimary: storyEntities.isPrimary,
+        })
+        .from(storyEntities)
+        .innerJoin(entities, eq(storyEntities.entityId, entities.id))
+        .where(eq(storyEntities.storyId, id))
+        .orderBy(desc(storyEntities.relevance)),
+      db
         .select({
           id: articles.id,
           title: articles.title,
@@ -255,275 +78,254 @@ export default defineEventHandler(async (event) => {
           primaryFraming: classifications.primaryFraming,
           sensationalism: classifications.sensationalism,
           factOpinionRatio: classifications.factOpinionRatio,
-          sourceCountCited: classifications.sourceCountCited,
           articleType: classifications.articleType,
           summary: analyses.summary,
-          sentiment: analyses.sentiment,
         })
         .from(storyMembers)
         .innerJoin(articles, eq(storyMembers.articleId, articles.id))
         .leftJoin(classifications, eq(articles.id, classifications.articleId))
         .leftJoin(feeds, eq(articles.feedId, feeds.id))
         .leftJoin(analyses, eq(articles.id, analyses.articleId))
-        .where(and(
-          eq(storyMembers.storyId, id),
-          gte(articles.publishedAt, new Date(periodStart)),
-          lt(articles.publishedAt, new Date(periodEnd))
-        ))
-        .orderBy(desc(articles.publishedAt))
+        .where(eq(storyMembers.storyId, id))
+        .orderBy(articles.publishedAt),
+    ])
 
-      return {
-        periodArticles,
-        periodStart,
-        periodEnd,
-      }
+    const articleIds = storyArticles.map(a => a.id)
+    const feedIds = [...new Set(storyArticles.map(a => a.feedId))]
+
+    const [feedRows, claimRows] = await Promise.all([
+      feedIds.length > 0
+        ? db
+            .select({
+              id: feeds.id,
+              name: feeds.name,
+              knownBias: feeds.knownBias,
+              leanApplicable: feeds.leanApplicable,
+              ownership: feeds.ownership,
+              country: feeds.country,
+            })
+            .from(feeds)
+            .where(inArray(feeds.id, feedIds))
+        : Promise.resolve([]),
+      articleIds.length > 0
+        ? db
+            .select({
+              articleId: articleClaims.articleId,
+              claimText: articleClaims.claimText,
+              attribution: articleClaims.attribution,
+              claimType: articleClaims.claimType,
+              confidence: articleClaims.confidence,
+            })
+            .from(articleClaims)
+            .where(inArray(articleClaims.articleId, articleIds))
+        : Promise.resolve([]),
+    ])
+
+    const articleById = new Map(storyArticles.map(a => [a.id, a]))
+    const articleRef = (articleId: number) => {
+      const a = articleById.get(articleId)
+      if (!a) return null
+      return { id: a.id, title: a.title, url: a.url, feedId: a.feedId, outlet: shortOutletName(a.feedName), publishedAt: a.publishedAt }
     }
 
-    // Get all articles with feature fields
-    const storyArticles = await db
-      .select({
-        id: articles.id,
-        title: articles.title,
-        url: articles.url,
-        publishedAt: articles.publishedAt,
-        feedId: articles.feedId,
-        feedName: feeds.name,
-        isRepresentative: storyMembers.isRepresentative,
-        similarity: storyMembers.similarity,
-        imageUrl: articles.imageUrl,
-        imageLocalPath: articles.imageLocalPath,
-        politicalBias: classifications.politicalBias,
-        primaryFraming: classifications.primaryFraming,
-        sensationalism: classifications.sensationalism,
-        factOpinionRatio: classifications.factOpinionRatio,
-        sourceCountCited: classifications.sourceCountCited,
-        articleType: classifications.articleType,
-        summary: analyses.summary,
-        sentiment: analyses.sentiment,
+    // Outlets: who covered it, how much, and when
+    const perspectiveByFeed = new Map<number, NarrativePerspective>()
+    for (const p of (narrative?.perspectives as NarrativePerspective[] | undefined) || []) {
+      for (const feedId of p.feedIds) perspectiveByFeed.set(feedId, p)
+    }
+    const outlets = feedRows
+      .map((f) => {
+        const own = storyArticles.filter(a => a.feedId === f.id)
+        const perspective = perspectiveByFeed.get(f.id)
+        const framingCounts: Record<string, number> = {}
+        for (const a of own) {
+          if (a.primaryFraming) framingCounts[a.primaryFraming] = (framingCounts[a.primaryFraming] || 0) + 1
+        }
+        const topFraming = Object.entries(framingCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null
+        // The outlet's typical headlines: the ones the narrative cites, else its newest
+        const cited = (perspective?.articleIds || []).map(articleRef).filter(Boolean)
+        const headlines = cited.length > 0
+          ? cited
+          : own.slice(-3).reverse().map(a => articleRef(a.id))
+        return {
+          feedId: f.id,
+          name: f.name,
+          shortName: shortOutletName(f.name),
+          bias: f.knownBias,
+          leanApplicable: f.leanApplicable,
+          ownership: f.ownership,
+          country: f.country,
+          articleCount: own.length,
+          firstAt: own[0]?.publishedAt || null,
+          lastAt: own[own.length - 1]?.publishedAt || null,
+          framing: perspective?.framing || null,
+          topFraming: topFraming ? (FRAMING_DISPLAY[topFraming] || topFraming) : null,
+          headlines,
+        }
       })
-      .from(storyMembers)
-      .innerJoin(articles, eq(storyMembers.articleId, articles.id))
-      .leftJoin(classifications, eq(articles.id, classifications.articleId))
-      .leftJoin(feeds, eq(articles.feedId, feeds.id))
-      .leftJoin(analyses, eq(articles.id, analyses.articleId))
-      .where(eq(storyMembers.storyId, id))
-      .orderBy(desc(articles.publishedAt))
+      .sort((a, b) => b.articleCount - a.articleCount)
 
-    // Compute time span
-    const dates = storyArticles
-      .map(a => a.publishedAt ? new Date(a.publishedAt).getTime() : null)
-      .filter((d): d is number => d !== null)
-
-    if (dates.length === 0) {
-      return {
-        ...story,
-        coverage,
-        entities: storyEntityList,
-        timeline: { bucketType: 'day', periods: [] },
-        framingSummary: {},
-        avgSensationalism: null,
-        avgFactuality: null,
-        totalArticleCounts: { total: 0 },
-      }
-    }
-
-    const minDate = Math.min(...dates)
-    const maxDate = Math.max(...dates)
-    const span = maxDate - minDate
-    const bucket = computeBucketSize(span)
-
-    // Group articles into time buckets
-    const bucketMap = new Map<string, typeof storyArticles>()
-
-    for (const article of storyArticles) {
-      if (!article.publishedAt) continue
-      const articleDate = new Date(article.publishedAt)
-      const bucketStart = getBucketStart(articleDate, bucket.type)
-      const key = bucketStart.toISOString()
-
-      if (!bucketMap.has(key)) {
-        bucketMap.set(key, [])
-      }
-      bucketMap.get(key)!.push(article)
-    }
-
-    // Collect all article IDs for keyword and claims batch fetch
-    const allArticleIds = storyArticles.map(a => a.id)
-
-    // Batch fetch claims for all articles
-    const allClaims = allArticleIds.length > 0
-      ? await db
-          .select({
-            articleId: articleClaims.articleId,
-            claimText: articleClaims.claimText,
-            attribution: articleClaims.attribution,
-            claimType: articleClaims.claimType,
-            confidence: articleClaims.confidence,
-          })
-          .from(articleClaims)
-          .where(inArray(articleClaims.articleId, allArticleIds))
-      : []
-
-    // Build claims lookup by article ID
-    const claimsByArticle = new Map<number, typeof allClaims>()
-    for (const claim of allClaims) {
-      if (!claimsByArticle.has(claim.articleId)) {
-        claimsByArticle.set(claim.articleId, [])
-      }
-      claimsByArticle.get(claim.articleId)!.push(claim)
-    }
-
-    // Build article title lookup
-    const articleTitleMap = new Map<number, string>()
+    // Daily activity, split by outlet so the chart shows who drove coverage when
+    const activityMap = new Map<string, Record<number, number>>()
     for (const a of storyArticles) {
-      articleTitleMap.set(a.id, a.title)
+      if (!a.publishedAt) continue
+      const day = new Date(a.publishedAt).toISOString().slice(0, 10)
+      if (!activityMap.has(day)) activityMap.set(day, {})
+      const byFeed = activityMap.get(day)!
+      byFeed[a.feedId] = (byFeed[a.feedId] || 0) + 1
+    }
+    const activity: { date: string; count: number; byFeed: Record<number, number> }[] = []
+    if (activityMap.size > 0) {
+      // Fill gaps so quiet days show as quiet
+      const days = [...activityMap.keys()].sort()
+      const end = new Date(`${days[days.length - 1]}T00:00:00Z`)
+      for (let d = new Date(`${days[0]}T00:00:00Z`); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+        const key = d.toISOString().slice(0, 10)
+        const byFeed = activityMap.get(key) || {}
+        activity.push({ date: key, count: Object.values(byFeed).reduce((s, n) => s + n, 0), byFeed })
+      }
     }
 
-    // Collect top article IDs for keyword batch fetch
-    const allTopArticleIds: number[] = []
+    // Developments with their sources resolved
+    const developments = ((narrative?.developments as NarrativeDevelopment[] | undefined) || []).map(d => ({
+      date: d.date,
+      text: d.text,
+      sources: d.articleIds.map(articleRef).filter(Boolean),
+    }))
 
-    // Build periods with framing groups
-    const periods: TimelinePeriod[] = []
-
-    for (const [bucketStartStr, bucketArticles] of bucketMap) {
-      const bucketStart = new Date(bucketStartStr)
-      const bucketEnd = getBucketEnd(bucketStart, bucket.type)
-
-      // Build framing groups
-      const framingGroups = buildFramingGroups(bucketArticles as TimelineArticle[], 3)
-
-      // Track top article IDs for keyword fetch
-      const periodTopIds = framingGroups.flatMap(g => g.articles.map(a => a.id))
-      allTopArticleIds.push(...periodTopIds)
-
-      // Unique sources
-      const uniqueFeeds = new Set(bucketArticles.map(a => a.feedId))
-
-      // Pick headline from most representative article
-      const representative = bucketArticles.find(a => a.isRepresentative) || bucketArticles[0]
-
-      // Collect claims for this period's articles
-      const periodClaims: PeriodClaim[] = []
-      for (const article of bucketArticles) {
-        const artClaims = claimsByArticle.get(article.id) || []
-        for (const claim of artClaims) {
-          periodClaims.push({
-            claimText: claim.claimText,
-            attribution: claim.attribution,
-            claimType: claim.claimType,
-            confidence: claim.confidence,
-            articleId: article.id,
-            articleTitle: article.title,
-          })
-        }
-      }
-      // Sort claims by confidence, take top 5 per period
-      periodClaims.sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
-
-      periods.push({
-        periodStart: bucketStart.toISOString(),
-        periodEnd: bucketEnd.toISOString(),
-        headline: representative?.title || '',
-        totalArticles: bucketArticles.length,
-        sourceCount: uniqueFeeds.size,
-        topKeywords: [],
-        framingGroups,
-        claims: periodClaims.slice(0, 5),
+    // Key claims: attributed quotes and figures first, one per wording, spread across outlets
+    const seenClaims = new Set<string>()
+    const claims = claimRows
+      .filter(c => c.claimText && c.claimText.length > 20)
+      .sort((a, b) => {
+        const weight = (c: typeof a) => (c.attribution ? 0.3 : 0) + (c.claimType === 'quote' || c.claimType === 'statistic' ? 0.2 : 0) + (c.confidence || 0)
+        return weight(b) - weight(a)
       })
-    }
+      .filter((c) => {
+        const key = c.claimText.toLowerCase().replace(/[^a-z0-9 ]/g, '').slice(0, 60)
+        if (seenClaims.has(key)) return false
+        seenClaims.add(key)
+        return true
+      })
+    const perOutletClaims = new Map<number, number>()
+    const perSpeakerClaims = new Map<string, number>()
+    const topClaims = claims
+      .filter((c) => {
+        const feedId = articleById.get(c.articleId)?.feedId ?? 0
+        // "Zelensky" and "Volodymyr Zelenskyy" are one speaker: key on the last name's stem
+        const speaker = (c.attribution || '').toLowerCase().split(/\s+/).pop()?.slice(0, 7) || ''
+        if ((perOutletClaims.get(feedId) || 0) >= 3) return false
+        if (speaker && (perSpeakerClaims.get(speaker) || 0) >= 2) return false
+        perOutletClaims.set(feedId, (perOutletClaims.get(feedId) || 0) + 1)
+        if (speaker) perSpeakerClaims.set(speaker, (perSpeakerClaims.get(speaker) || 0) + 1)
+        return true
+      })
+      .slice(0, MAX_CLAIMS)
+      .map(c => ({ ...c, source: articleRef(c.articleId) }))
 
-    // Sort periods newest-first
-    periods.sort((a, b) => new Date(b.periodStart).getTime() - new Date(a.periodStart).getTime())
-
-    // Batch fetch keywords for all top articles
-    if (allTopArticleIds.length > 0) {
-      const topKeywords = await db
-        .select({
-          articleId: keywords.articleId,
-          keyword: keywords.keyword,
-          relevanceScore: keywords.relevanceScore,
-        })
-        .from(keywords)
-        .where(inArray(keywords.articleId, allTopArticleIds))
-
-      const keywordsByArticle = new Map<number, typeof topKeywords>()
-      for (const kw of topKeywords) {
-        if (!keywordsByArticle.has(kw.articleId)) {
-          keywordsByArticle.set(kw.articleId, [])
+    // Chapters: other stories about the same main entities, for the topic's history
+    const chapterRows = storyEntityList.length > 0
+      ? await db.execute(sql`
+          WITH mine AS (
+            SELECT entity_id, relevance FROM story_entities WHERE story_id = ${id}
+          )
+          SELECT s.id, s.representative_title, s.first_seen, s.last_updated, s.article_count, s.source_count,
+                 n.headline, n.lede,
+                 SUM(m.relevance * se.relevance) AS score
+          FROM story_entities se
+          JOIN mine m ON m.entity_id = se.entity_id
+          JOIN stories s ON s.id = se.story_id
+          LEFT JOIN story_narratives n ON n.story_id = s.id
+          WHERE se.story_id <> ${id}
+            AND s.article_count >= 3
+            AND (${story.primaryLanguage}::text IS NULL OR s.primary_language = ${story.primaryLanguage})
+          GROUP BY s.id, n.headline, n.lede
+          HAVING COUNT(*) >= 2
+          ORDER BY score DESC, s.last_updated DESC
+          LIMIT ${MAX_CHAPTERS}
+        `)
+      : { rows: [] }
+    const storyStart = new Date(story.firstSeen).getTime()
+    const storyEnd = new Date(story.lastUpdated).getTime()
+    const chapters = (chapterRows.rows as any[])
+      .map((r) => {
+        const start = new Date(r.first_seen).getTime()
+        const end = new Date(r.last_updated).getTime()
+        return {
+          id: Number(r.id),
+          title: r.headline || r.representative_title,
+          lede: r.lede || null,
+          firstSeen: r.first_seen,
+          lastUpdated: r.last_updated,
+          articleCount: Number(r.article_count),
+          sourceCount: Number(r.source_count),
+          relation: end < storyStart ? 'earlier' : start > storyEnd ? 'later' : 'overlapping',
         }
-        keywordsByArticle.get(kw.articleId)!.push(kw)
-      }
+      })
+      .sort((a, b) => new Date(a.firstSeen).getTime() - new Date(b.firstSeen).getTime())
 
-      for (const period of periods) {
-        const periodArticleIds = period.framingGroups.flatMap(g => g.articles.map(a => a.id))
-
-        const keywordAgg = new Map<string, { count: number; totalRelevance: number }>()
-
-        for (const artId of periodArticleIds) {
-          const artKeywords = keywordsByArticle.get(artId) || []
-          for (const kw of artKeywords) {
-            const existing = keywordAgg.get(kw.keyword)
-            if (existing) {
-              existing.count++
-              existing.totalRelevance += kw.relevanceScore
-            } else {
-              keywordAgg.set(kw.keyword, { count: 1, totalRelevance: kw.relevanceScore })
-            }
-          }
-        }
-
-        period.topKeywords = Array.from(keywordAgg.entries())
-          .map(([keyword, data]) => ({
-            keyword,
-            count: data.count,
-            avgRelevance: data.totalRelevance / data.count,
-          }))
-          .sort((a, b) => (b.count * b.avgRelevance) - (a.count * a.avgRelevance))
-          .slice(0, 5)
-      }
-    }
-
-    // Compute framing summary across all articles
+    // Framing distribution and quality averages
     const framingSummary: Record<string, number> = {}
     for (const a of storyArticles) {
-      const framing = a.primaryFraming || 'unclassified'
-      framingSummary[framing] = (framingSummary[framing] || 0) + 1
+      if (a.primaryFraming) framingSummary[a.primaryFraming] = (framingSummary[a.primaryFraming] || 0) + 1
+    }
+    const avg = (values: (number | null)[]) => {
+      const present = values.filter((v): v is number => v !== null)
+      return present.length > 0 ? present.reduce((s, v) => s + v, 0) / present.length : null
     }
 
-    // Compute average sensationalism and factuality
-    const withSensationalism = storyArticles.filter(a => a.sensationalism !== null)
-    const avgSensationalism = withSensationalism.length > 0
-      ? withSensationalism.reduce((sum, a) => sum + (a.sensationalism || 0), 0) / withSensationalism.length
-      : null
-
-    const withFactuality = storyArticles.filter(a => a.factOpinionRatio !== null)
-    const avgFactuality = withFactuality.length > 0
-      ? withFactuality.reduce((sum, a) => sum + (a.factOpinionRatio || 0), 0) / withFactuality.length
-      : null
-
     return {
-      ...story,
-      coverage,
+      id: story.id,
+      headline: narrative?.headline || story.representativeTitle || story.name,
+      latestHeadline: story.representativeTitle,
+      status: story.status,
+      firstSeen: story.firstSeen,
+      lastUpdated: story.lastUpdated,
+      articleCount: storyArticles.length,
+      sourceCount: story.sourceCount,
+      primaryRegion: story.primaryRegion,
+      topicLabel: story.topicLabel,
+      narrative: narrative
+        ? {
+            lede: narrative.lede,
+            background: narrative.background,
+            agreements: narrative.agreements,
+            disagreements: narrative.disagreements,
+            openQuestions: narrative.openQuestions,
+            generatedAt: narrative.generatedAt,
+            articleCount: narrative.articleCount,
+          }
+        : null,
+      developments,
+      outlets,
+      coverage: coverage || null,
+      activity,
+      claims: topClaims,
       entities: storyEntityList,
-      timeline: {
-        bucketType: bucket.type,
-        periods,
-      },
-      framingSummary,
-      avgSensationalism,
-      avgFactuality,
-      framingDisplay: FRAMING_DISPLAY,
-      framingColors: FRAMING_COLORS,
-      totalArticleCounts: {
-        total: storyArticles.length,
-      },
+      chapters,
+      framing: Object.entries(framingSummary)
+        .map(([key, count]) => ({ key, label: FRAMING_DISPLAY[key] || key, count }))
+        .sort((a, b) => b.count - a.count),
+      avgSensationalism: avg(storyArticles.map(a => a.sensationalism)),
+      avgFactuality: avg(storyArticles.map(a => a.factOpinionRatio)),
+      articles: storyArticles.map(a => ({
+        id: a.id,
+        title: a.title,
+        url: a.url,
+        publishedAt: a.publishedAt,
+        feedId: a.feedId,
+        outlet: shortOutletName(a.feedName),
+        imageUrl: a.imageUrl,
+        imageLocalPath: a.imageLocalPath,
+        politicalBias: a.politicalBias,
+        framing: a.primaryFraming ? (FRAMING_DISPLAY[a.primaryFraming] || a.primaryFraming) : null,
+        articleType: a.articleType,
+        summary: a.summary ? a.summary.slice(0, 320) : null,
+      })),
     }
   } catch (error: any) {
     if (error.statusCode) throw error
     console.error('Error fetching story details:', error)
-    throw createError({
-      statusCode: 500,
-      statusMessage: 'Failed to fetch story details',
-    })
+    throw createError({ statusCode: 500, statusMessage: 'Failed to fetch story details' })
   }
 })

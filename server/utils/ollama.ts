@@ -1,5 +1,6 @@
 import { Ollama } from 'ollama'
-import { isGeminiAvailable, generateGeminiCompletion, generateGeminiJSON } from './gemini'
+import { isGeminiAvailable, generateGeminiCompletion, generateGeminiJSON, getSummaryModel } from './gemini'
+import { isClaudeAvailable, generateClaudeCompletion, generateClaudeJSON, getClaudeModel, type LlmLayer } from './claude'
 import { groundSystemPrompt } from './llmGrounding'
 import { isOpenRouterAvailable, generateOpenRouterCompletion, generateOpenRouterJSON } from './openrouter'
 
@@ -168,13 +169,16 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 }
 
 /**
- * Generate chat completion using OpenRouter (primary), Gemini (secondary), or Ollama (fallback)
+ * Generate chat completion. Order: Claude (if FORCE_CLAUDE), Gemini (if FORCE_GEMINI),
+ * OpenRouter, Gemini, Ollama.
  */
 export async function generateChatCompletion(
   prompt: string,
   systemPrompt?: string,
   options?: {
     model?: string
+    /** Pipeline layer; picks each provider's model for it. `model` is the Ollama model name */
+    layer?: LlmLayer
     temperature?: number
     maxTokens?: number
     format?: string
@@ -183,9 +187,29 @@ export async function generateChatCompletion(
   // Check force flags
   const forceOllama = process.env.FORCE_OLLAMA === 'true'
   const forceGemini = process.env.FORCE_GEMINI === 'true'
+  const forceClaude = process.env.FORCE_CLAUDE === 'true'
 
   const wantJson = options?.format === 'json'
+
+  if (forceClaude && isClaudeAvailable()) {
+    const model = getClaudeModel(options?.layer)
+    try {
+      console.log(`[LLM] Using Claude API for chat completion (forced, ${model})...`)
+      const result = await generateClaudeCompletion(prompt, systemPrompt, {
+        model,
+        maxTokens: options?.maxTokens,
+        jsonMode: wantJson,
+      })
+      console.log('[LLM] ✓ Claude API succeeded')
+      return result
+    } catch (claudeError) {
+      console.warn('[LLM] ✗ Claude API failed:', claudeError instanceof Error ? claudeError.message : 'Unknown error')
+      console.log('[LLM] Falling back to other providers...')
+    }
+  }
+
   const geminiOpts = {
+    model: options?.layer === 'summary' ? getSummaryModel() : undefined,
     temperature: options?.temperature,
     maxTokens: options?.maxTokens,
     ...(wantJson && { responseMimeType: 'application/json' }),
@@ -311,6 +335,7 @@ export async function generateJSON<T>(
   systemPrompt?: string,
   options?: {
     model?: string
+    layer?: LlmLayer
     temperature?: number
     maxTokens?: number
   }
@@ -318,12 +343,29 @@ export async function generateJSON<T>(
   // Check force flags
   const forceOllama = process.env.FORCE_OLLAMA === 'true'
   const forceGemini = process.env.FORCE_GEMINI === 'true'
+  const forceClaude = process.env.FORCE_CLAUDE === 'true'
+
+  if (forceClaude && isClaudeAvailable()) {
+    const model = getClaudeModel(options?.layer)
+    try {
+      console.log(`[LLM] Using Claude API for JSON generation (forced, ${model})...`)
+      const result = await generateClaudeJSON<T>(prompt, systemPrompt, { model, maxTokens: options?.maxTokens })
+      console.log('[LLM] ✓ Claude API succeeded')
+      return result
+    } catch (claudeError) {
+      console.warn('[LLM] ✗ Claude API failed:', claudeError instanceof Error ? claudeError.message : 'Unknown error')
+      console.log('[LLM] Falling back to other providers...')
+    }
+  }
+
+  const geminiModel = options?.layer === 'summary' ? getSummaryModel() : undefined
 
   // If forcing Gemini, try it first
   if (forceGemini && isGeminiAvailable()) {
     try {
       console.log('[LLM] Using Gemini API for JSON generation (forced)...')
       const result = await generateGeminiJSON<T>(prompt, systemPrompt, {
+        model: geminiModel,
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
       })
@@ -356,6 +398,7 @@ export async function generateJSON<T>(
     try {
       console.log('[LLM] Using Gemini API for JSON generation...')
       const result = await generateGeminiJSON<T>(prompt, systemPrompt, {
+        model: geminiModel,
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
       })

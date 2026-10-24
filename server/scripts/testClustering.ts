@@ -1,7 +1,10 @@
 /**
  * Test entity-based article clustering
  *
- * Run with: npm run test:cluster [threshold] [minClusterSize] [maxClusterSize]
+ * Run with: npm run test:cluster [threshold] [minClusterSize] [maxClusterSize] [--dry-run]
+ *
+ * Stories keep their ID when a new cluster continues them; --dry-run only
+ * reports how many IDs would be kept, created and removed.
  *
  * Example:
  *   npm run test:cluster 0.35 2 80    # 35% threshold, min 2, max 80
@@ -10,9 +13,9 @@
 
 import { config } from 'dotenv'
 import { getDatabase } from '../database/db'
-import { articles, stories, storyMembers, storyCoverage, storyEntities, storyMetrics } from '../database/schema'
+import { articles, stories, storyMembers } from '../database/schema'
 import { clusterWithEntities } from '../services/entityClustering'
-import { eq, isNotNull, sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 
 // Load environment variables
 config()
@@ -21,9 +24,11 @@ async function testClustering() {
   const db = getDatabase()
 
   // Parse command line arguments
-  const threshold = parseFloat(process.argv[2]) || 0.35
-  const minClusterSize = parseInt(process.argv[3]) || 2
-  const maxClusterSize = parseInt(process.argv[4]) || 80
+  const dryRun = process.argv.includes('--dry-run')
+  const args = process.argv.slice(2).filter(a => !a.startsWith('--'))
+  const threshold = parseFloat(args[0]) || 0.35
+  const minClusterSize = parseInt(args[1]) || 2
+  const maxClusterSize = parseInt(args[2]) || 80
 
   console.log(`\n🔮 Testing Entity-Based Article Clustering`)
   console.log(`   Affinity Threshold: ${threshold}`)
@@ -31,17 +36,8 @@ async function testClustering() {
   console.log(`   Max Cluster Size: ${maxClusterSize} articles`)
 
   try {
-    // Clear existing stories and all dependent tables (for testing)
-    console.log(`\n🗑️  Clearing existing stories...`)
-    await db.delete(storyMetrics)
-    await db.delete(storyCoverage)
-    await db.delete(storyEntities)
-    await db.delete(storyMembers)
-    await db.update(articles).set({ storyId: null }).where(isNotNull(articles.storyId))
-    await db.delete(stories)
-
     // Run entity-based clustering
-    const result = await clusterWithEntities(threshold, minClusterSize, maxClusterSize)
+    const result = await clusterWithEntities(threshold, minClusterSize, maxClusterSize, dryRun)
 
     if (!result.success) {
       console.log(`\n❌ Clustering failed: ${result.error}\n`)
@@ -50,10 +46,18 @@ async function testClustering() {
 
     console.log(`\n\n📊 CLUSTERING RESULTS`)
     console.log('=' .repeat(70))
-    console.log(`Stories Created:    ${result.groupsCreated}`)
+    console.log(`Stories:            ${result.groupsCreated}`)
     console.log(`Articles Grouped:   ${result.articlesGrouped}`)
     console.log(`Orphans Assigned:   ${result.orphansAssigned}`)
     console.log(`Candidate Pairs:    ${result.candidatePairs.toLocaleString()}`)
+
+    console.log(`IDs Kept:           ${result.storiesKept}`)
+    console.log(`Stories Removed:    ${result.storiesRemoved}`)
+
+    if (dryRun) {
+      console.log(`\n(dry run — database unchanged)\n`)
+      process.exit(0)
+    }
 
     if (result.groupsCreated === 0) {
       console.log(`\n⚠️  No stories created. Try lowering the threshold.`)

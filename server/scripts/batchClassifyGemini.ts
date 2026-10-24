@@ -30,6 +30,7 @@ interface ArticleData {
   content: string | null
   fullContent: string | null
   knownBias: number | null
+  leanApplicable: boolean | null
 }
 
 async function batchClassifyGemini() {
@@ -50,6 +51,7 @@ async function batchClassifyGemini() {
         content: articles.content,
         fullContent: articles.fullContent,
         knownBias: feeds.knownBias,
+        leanApplicable: feeds.leanApplicable,
       })
       .from(articles)
       .leftJoin(feeds, eq(articles.feedId, feeds.id))
@@ -98,7 +100,9 @@ async function batchClassifyGemini() {
       // Bias classification (rule-based if knownBias exists, otherwise will use LLM later in real-time)
       const isContentThin = textToAnalyze.length < 300
       let biasResult
-      if (isContentThin && article.knownBias === null) {
+      if (article.leanApplicable === false) {
+        biasResult = { bias: 0, confidence: 1, method: 'not-rated', reasoning: 'Outlet is not rated on the left–right scale' }
+      } else if (isContentThin && article.knownBias === null) {
         biasResult = { bias: 0, confidence: 0.1, method: 'rule-based', reasoning: 'Content too short' }
       } else {
         // For batch mode, use rule-based classification (no LLM call)
@@ -240,7 +244,7 @@ async function batchClassifyGemini() {
           .values({
             articleId,
             language: data.language,
-            politicalBias: (data.isContentThin && data.article.knownBias === null) ? null : data.biasResult.bias,
+            politicalBias: (data.article.leanApplicable === false || (data.isContentThin && data.article.knownBias === null)) ? null : data.biasResult.bias,
             geoPov,
             confidence: Math.min(0.8, data.biasResult.confidence), // Cap at 0.8 for batch
             method: data.biasResult.method,

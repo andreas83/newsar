@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { Activity } from '~/components/MapActivity24h.vue'
+
 const cartoTileUrl = useCartoTileUrl('dark_all')
 
 type Hotspot = {
@@ -30,7 +32,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   economy: '#D97706',
   diplomacy: '#1D4ED8',
   health: '#059669',
-  environment: '#15803D',
+  environment: '#65A30D',
   technology: '#0891B2',
   society: '#C2410C',
   other: '#6B6353',
@@ -45,8 +47,7 @@ const selectedId = ref<number | null>(null)
 
 const { data, pending, refresh } = await useFetch<{
   hotspots: Hotspot[]
-  timeline: Array<Record<string, any>>
-  pings: Array<any>
+  activity: Activity
   stats: {
     hotspotCount: number
     critical: number
@@ -137,6 +138,18 @@ function selectHotspot(id: number) {
   }
 }
 
+const mappedIds = computed(() => new Set(geocoded.value.map(h => h.id)))
+
+// From the 24h section: make sure the place is visible under current filters, then fly to it
+function focusPlace(id: number) {
+  const hs = geocoded.value.find(h => h.id === id)
+  if (!hs) return
+  if (!activeCategories.value.has(hs.topCategory)) toggleCat(hs.topCategory)
+  if (!activeSeverities.value.has(hs.severity)) toggleSev(hs.severity)
+  selectHotspot(id)
+  mapContainer.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 function toggleCat(c: string) {
   if (activeCategories.value.has(c)) activeCategories.value.delete(c)
   else activeCategories.value.add(c)
@@ -219,45 +232,6 @@ function biasLabel(b: number | null) {
   return 'Far Right'
 }
 
-// Timeline sparkline
-const timelineData = computed(() => {
-  const buckets = data.value?.timeline || []
-  const cats = ['conflict', 'politics', 'economy', 'diplomacy', 'health', 'environment', 'technology', 'society']
-  const maxTotal = Math.max(1, ...buckets.map(b => cats.reduce((s, c) => s + (Number(b[c]) || 0), 0)))
-  return { buckets, cats, maxTotal }
-})
-
-// Build stacked area SVG
-function areaPoints(series: number[], offset: number[], max: number, w = 720, h = 140) {
-  if (series.length === 0) return ''
-  const step = w / Math.max(1, series.length - 1)
-  const top = series.map((v, i) => {
-    const x = i * step
-    const y = h - ((v + offset[i]) / max) * (h - 10)
-    return `${x.toFixed(1)},${y.toFixed(1)}`
-  })
-  const bot = series.map((_, i) => {
-    const x = (series.length - 1 - i) * step
-    const y = h - (offset[series.length - 1 - i] / max) * (h - 10)
-    return `${x.toFixed(1)},${y.toFixed(1)}`
-  })
-  return [...top, ...bot].join(' ')
-}
-
-const stackedSeries = computed(() => {
-  const { buckets, cats, maxTotal } = timelineData.value
-  if (buckets.length === 0) return { layers: [], maxTotal }
-  const offsets = new Array(buckets.length).fill(0)
-  const layers: Array<{ cat: string; color: string; points: string }> = []
-  for (const cat of cats) {
-    const series = buckets.map(b => Number(b[cat]) || 0)
-    const points = areaPoints(series, [...offsets], maxTotal)
-    layers.push({ cat, color: CATEGORY_COLORS[cat], points })
-    for (let i = 0; i < series.length; i++) offsets[i] += series[i]
-  }
-  return { layers, maxTotal }
-})
-
 onMounted(async () => {
   if (!mapContainer.value) return
   const L = await import('leaflet')
@@ -300,10 +274,6 @@ function pct(n: number | undefined, total: number | undefined) {
   if (!n || !total) return 0
   return Math.min(100, Math.round((n / total) * 100))
 }
-function formatClock(d: string | Date) {
-  const dt = new Date(d)
-  return dt.toISOString().slice(11, 16)
-}
 </script>
 
 <template>
@@ -338,9 +308,9 @@ function formatClock(d: string | Date) {
             <div class="trend">▬ elevated</div>
           </div>
           <div class="stat">
-            <div class="label">Pings · 24h</div>
-            <div class="value">{{ data?.pings?.length || 0 }}<sub>events</sub></div>
-            <div class="trend">▬ live feed</div>
+            <div class="label">Articles · 24h</div>
+            <div class="value">{{ data?.activity?.total || 0 }}<sub>published</sub></div>
+            <div class="trend">▬ hour by hour below</div>
           </div>
         </div>
       </div>
@@ -538,72 +508,21 @@ function formatClock(d: string | Date) {
       </aside>
     </section>
 
-    <!-- BOTTOM: timeline + recent pings -->
+    <!-- BOTTOM: the last 24 hours -->
     <div class="sect-head">
       <span class="num">§ 02</span>
-      <h2>Activity over 24 hours</h2>
-      <span class="tag">Hourly buckets · stacked by category</span>
+      <h2>The last 24 hours</h2>
+      <span class="tag">Hour by hour · vs the day before</span>
     </div>
 
-    <section class="ts-strip">
-      <div class="timeline-card">
-        <div class="card-hd">
-          <h3>Hotspot volume</h3><span>Stacked by category</span>
-        </div>
-        <div class="ts-body">
-          <div class="ts-chart">
-            <svg viewBox="0 0 720 140" preserveAspectRatio="none" style="width:100%; height:100%; display:block;">
-              <g v-for="layer in stackedSeries.layers" :key="layer.cat">
-                <polygon :points="layer.points" :fill="layer.color" fill-opacity="0.7" />
-              </g>
-              <g font-family="JetBrains Mono" font-size="9" fill="#9A9080">
-                <text x="0" y="138">−24h</text>
-                <text x="180" y="138">−18h</text>
-                <text x="360" y="138">−12h</text>
-                <text x="540" y="138">−6h</text>
-                <text x="690" y="138">NOW</text>
-              </g>
-            </svg>
-          </div>
-          <div class="ts-bottom">
-            <span>24h window</span>
-            <span>{{ timelineData.buckets.length }} buckets</span>
-            <span>max {{ stackedSeries.maxTotal }}/h</span>
-          </div>
-        </div>
-        <div class="ts-legend">
-          <span v-for="cat in timelineData.cats" :key="cat">
-            <i :style="{ background: CATEGORY_COLORS[cat] }" />
-            <span style="text-transform:capitalize">{{ cat }}</span>
-          </span>
-        </div>
-      </div>
-
-      <aside class="card">
-        <div class="card-hd"><h3>Recent pings</h3><span>Live feed</span></div>
-        <div class="latest">
-          <NuxtLink
-            v-for="p in (data?.pings || []).slice(0, 8)"
-            :key="p.articleId"
-            :to="`/articles/${p.articleId}`"
-            class="latest-row"
-          >
-            <div class="time">
-              <b>{{ formatClock(p.publishedAt) }}</b>
-              <span>{{ timeAgo(p.publishedAt) }}</span>
-            </div>
-            <div class="title">
-              {{ p.title }}
-              <small>{{ p.locationName }} · {{ p.feedName }}</small>
-            </div>
-            <span class="ping-tag" :style="{ color: CATEGORY_COLORS[p.category] }">{{ (p.category || 'other').slice(0, 4).toUpperCase() }}</span>
-          </NuxtLink>
-          <div v-if="!data?.pings?.length" style="padding: 20px; text-align:center; color: var(--color-ink-3); font-family: var(--font-mono); font-size: 11px;">
-            No recent pings.
-          </div>
-        </div>
-      </aside>
-    </section>
+    <MapActivity24h
+      class="activity"
+      :activity="data?.activity"
+      :colors="CATEGORY_COLORS"
+      :mapped-ids="mappedIds"
+      :loading="pending"
+      @select-place="focusPlace"
+    />
   </div>
 </template>
 
@@ -783,35 +702,12 @@ function formatClock(d: string | Date) {
 }
 .btn.secondary { background: var(--color-panel); color: var(--color-ink); border-color: var(--color-rule); }
 
-/* BOTTOM timeline */
-.ts-strip { display: grid; grid-template-columns: 1fr 380px; gap: var(--gap-xl); margin-top: var(--gap-md); margin-bottom: var(--gap-xl); }
-.timeline-card, .card { background: var(--color-panel); border: 1px solid var(--color-rule); }
-.ts-body { padding: 16px var(--pad); }
-.ts-chart { height: 140px; position: relative; margin-bottom: 16px; }
-.ts-bottom { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 10px; color: var(--color-ink-3); letter-spacing: 0.06em; text-transform: uppercase; }
-.ts-legend { display: flex; gap: 16px; padding: 10px var(--pad); border-top: 1px solid var(--color-rule-soft); font-family: var(--font-mono); font-size: 10.5px; color: var(--color-ink-2); flex-wrap: wrap; }
-.ts-legend i { width: 14px; height: 2px; display: inline-block; margin-right: 5px; vertical-align: middle; }
-
-/* pings */
-.latest { display: flex; flex-direction: column; }
-.latest-row {
-  display: grid; grid-template-columns: 54px 1fr auto;
-  gap: 10px; padding: 10px var(--pad); border-top: 1px solid var(--color-rule-soft);
-  align-items: center; font-family: var(--font-mono); font-size: 11px;
-  color: var(--color-ink-2); text-decoration: none;
-}
-.latest-row:hover { background: var(--color-paper); }
-.latest-row .time b { color: var(--color-ink); display: block; }
-.latest-row .time span { color: var(--color-ink-3); }
-.latest-row .title { font-family: var(--font-head, 'IBM Plex Sans', sans-serif); font-size: 12.5px; font-weight: 600; color: var(--color-ink); line-height: 1.3; }
-.latest-row .title small { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--color-ink-3); margin-top: 2px; font-weight: 500; }
-.ping-tag { font-family: var(--font-mono); font-size: 9px; padding: 1px 5px; border: 1px solid var(--color-rule); font-weight: 700; }
+.activity { display: block; margin-top: var(--gap-md); margin-bottom: var(--gap-xl); }
 
 @media (max-width: 1100px) {
   .hdr-wrap { grid-template-columns: 1fr; }
   .maps-wrap { grid-template-columns: 1fr; }
   .maps-col.left, .maps-col.right { border-left: 0; border-right: 0; border-top: 1px solid var(--color-rule); }
-  .ts-strip { grid-template-columns: 1fr; }
   .dash-stats { grid-template-columns: repeat(2, 1fr); }
 }
 </style>
