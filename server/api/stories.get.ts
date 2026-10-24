@@ -1,12 +1,17 @@
 import { getDatabase } from '~/server/database/db'
-import { stories, storyCoverage, storyEntities, entities, storyMembers, articles, classifications, feeds, keywords, articleClaims } from '~/server/database/schema'
+import { leanGroup, outletShortName, sortOutlets } from '~/server/utils/outletColumns'
+import { stories, storyEntities, entities, articles, feeds, keywords } from '~/server/database/schema'
 import { eq, desc, sql, and, gte, inArray } from 'drizzle-orm'
+
+// Days of history in each story's volume strip
+const VOLUME_DAYS = 14
 
 export default defineEventHandler(async (event) => {
   const db = getDatabase()
   const query = getQuery(event)
 
   const limit = Math.min(parseInt(query.limit as string || '20'), 50)
+  const offset = Math.max(0, parseInt(query.offset as string || '0') || 0)
   const sortBy = query.sortBy as string || 'trending' // 'trending', 'recent', 'diverse', 'largest'
   const language = query.language as string || 'all'
   const dateRange = query.dateRange as string || 'all'
@@ -194,41 +199,33 @@ export default defineEventHandler(async (event) => {
     }
 
     // Fetch stories with coverage data
-    const results = await db
-      .select({
-        id: stories.id,
-        name: stories.name,
-        representativeTitle: stories.representativeTitle,
-        description: stories.description,
-        summary: stories.summary,
-        status: stories.status,
-        trendingScore: stories.trendingScore,
-        articleCount: stories.articleCount,
-        sourceCount: stories.sourceCount,
-        sourceDiversityScore: stories.sourceDiversityScore,
-        firstSeen: stories.firstSeen,
-        lastUpdated: stories.lastUpdated,
-        topicLabel: stories.topicLabel,
-        primaryRegion: stories.primaryRegion,
-        primaryEntities: stories.primaryEntities,
-        timeSpanHours: stories.timeSpanHours,
-        clusterVersion: stories.clusterVersion,
-        leftCount: storyCoverage.leftCount,
-        centerCount: storyCoverage.centerCount,
-        rightCount: storyCoverage.rightCount,
-        coverageDiversityScore: storyCoverage.coverageDiversityScore,
-        framingDistribution: storyCoverage.framingDistribution,
-        avgSensationalism: storyCoverage.avgSensationalism,
-        avgFactuality: storyCoverage.avgFactuality,
-      })
-      .from(stories)
-      .leftJoin(storyCoverage, eq(stories.id, storyCoverage.storyId))
-      .where(and(...conditions))
-      .orderBy(orderByClause)
-      .limit(limit)
+    const [results, [{ total }]] = await Promise.all([
+      db
+        .select({
+          id: stories.id,
+          title: sql<string>`COALESCE(${stories.name}, ${stories.representativeTitle})`,
+          summary: stories.summary,
+          status: stories.status,
+          articleCount: stories.articleCount,
+          sourceCount: stories.sourceCount,
+          firstSeen: stories.firstSeen,
+          lastUpdated: stories.lastUpdated,
+          primaryRegion: stories.primaryRegion,
+          primaryEntities: stories.primaryEntities,
+        })
+        .from(stories)
+        .where(and(...conditions))
+        .orderBy(orderByClause, desc(stories.id))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ total: sql<number>`COUNT(*)::int` })
+        .from(stories)
+        .where(and(...conditions)),
+    ])
 
     // If no stories found and filtering by entity or keyword, return fallback articles
-    if (results.length === 0 && (entityId || keyword)) {
+    if (results.length === 0 && offset === 0 && (entityId || keyword)) {
       const articleConditions: any[] = []
 
       if (entityId) {
@@ -268,86 +265,142 @@ export default defineEventHandler(async (event) => {
         .limit(limit)
 
       return {
-        fallbackArticles: fallbackArticles,
+        fallbackArticles,
         stories: [],
+        total: 0,
+        outlets: [],
+        days: [],
       }
     }
 
-    // Batch fetch top claims for all stories (avoids N+1)
+    // Columns: active outlets that published in the last 30 days
+    const feedLanguageFilter = language !== 'all' ? sql`AND f.language = ${language}` : sql``
+    const outletRows = await db.execute(sql`
+      SELECT f.id, f.name, f.known_bias, f.lean_applicable, COUNT(a.id)::int AS n
+      FROM feeds f
+      JOIN articles a ON a.feed_id = f.id
+        AND a.published_at > now() - interval '30 days'
+        AND a.published_at <= now()
+      WHERE f.is_active = 1 ${feedLanguageFilter}
+      GROUP BY f.id
+    `)
+    const outlets = sortOutlets((outletRows.rows as any[])
+      .map(r => ({
+        id: r.id as number,
+        name: r.name as string,
+        shortName: outletShortName(r.name),
+        bias: r.known_bias as number | null,
+        group: leanGroup(r.known_bias, r.lean_applicable),
+        weekCount: r.n as number,
+      })))
+
     const storyIds = results.map(s => s.id)
-    const allClaims = storyIds.length > 0
-      ? await db
-          .select({
-            storyId: storyMembers.storyId,
-            claimText: articleClaims.claimText,
-            claimType: articleClaims.claimType,
-            attribution: articleClaims.attribution,
-            confidence: articleClaims.confidence,
-          })
-          .from(articleClaims)
-          .innerJoin(storyMembers, eq(articleClaims.articleId, storyMembers.articleId))
-          .where(inArray(storyMembers.storyId, storyIds))
-          .orderBy(desc(articleClaims.confidence))
-      : []
+    const counts = new Map<number, Record<number, number>>()
+    const fresh = new Map<number, number[]>()
+    const daily = new Map<number, number[]>()
+    const images = new Map<number, { imageUrl: string | null; imageLocalPath: string | null }>()
+    const fallbackEntities = new Map<number, Array<{ id: number; name: string; type: string }>>()
+    const days: string[] = []
 
-    // Group claims by story, keep top 3 per story
-    const claimsByStory = new Map<number, Array<{ claimText: string; claimType: string | null; attribution: string | null }>>()
-    for (const claim of allClaims) {
-      const list = claimsByStory.get(claim.storyId) || []
-      if (list.length < 3) {
-        list.push({ claimText: claim.claimText, claimType: claim.claimType, attribution: claim.attribution })
-        claimsByStory.set(claim.storyId, list)
+    if (storyIds.length > 0) {
+      const idList = sql.join(storyIds.map(id => sql`${id}`), sql`, `)
+      const needEntities = results
+        .filter(r => !Array.isArray(r.primaryEntities) || (r.primaryEntities as any[]).length === 0)
+        .map(r => r.id)
+
+      const [countRows, dayRows, imageRows, entityRows] = await Promise.all([
+        db.execute(sql`
+          SELECT sm.story_id, a.feed_id, COUNT(*)::int AS n,
+                 BOOL_OR(a.published_at > now() - interval '24 hours') AS fresh
+          FROM story_members sm
+          JOIN articles a ON a.id = sm.article_id
+          WHERE sm.story_id IN (${idList})
+          GROUP BY sm.story_id, a.feed_id
+        `),
+        // UTC calendar days, today last
+        db.execute(sql`
+          WITH days AS (
+            SELECT ((now() AT TIME ZONE 'UTC')::date - g) AS day
+            FROM generate_series(0, ${VOLUME_DAYS - 1}) g
+          )
+          SELECT s.id AS story_id, d.day::text AS day, COUNT(a.id)::int AS n
+          FROM unnest(ARRAY[${idList}]::int[]) AS s(id)
+          CROSS JOIN days d
+          LEFT JOIN story_members sm ON sm.story_id = s.id
+          LEFT JOIN articles a ON a.id = sm.article_id AND a.published_at::date = d.day
+          GROUP BY s.id, d.day
+          ORDER BY s.id, d.day
+        `),
+        // Newest member article that has a local image
+        db.execute(sql`
+          SELECT DISTINCT ON (sm.story_id) sm.story_id, a.image_url, a.image_local_path
+          FROM story_members sm
+          JOIN articles a ON a.id = sm.article_id
+          WHERE sm.story_id IN (${idList}) AND a.image_local_path IS NOT NULL
+          ORDER BY sm.story_id, sm.is_representative DESC, a.published_at DESC
+        `),
+        needEntities.length > 0
+          ? db
+              .select({ storyId: storyEntities.storyId, id: entities.id, name: entities.name, type: entities.type })
+              .from(storyEntities)
+              .innerJoin(entities, eq(storyEntities.entityId, entities.id))
+              .where(inArray(storyEntities.storyId, needEntities))
+              .orderBy(desc(storyEntities.relevance))
+          : Promise.resolve([]),
+      ])
+
+      for (const r of countRows.rows as any[]) {
+        const c = counts.get(r.story_id) || {}
+        c[r.feed_id] = r.n
+        counts.set(r.story_id, c)
+        if (r.fresh) fresh.set(r.story_id, [...(fresh.get(r.story_id) || []), r.feed_id])
+      }
+      for (const r of dayRows.rows as any[]) {
+        daily.set(r.story_id, [...(daily.get(r.story_id) || []), r.n])
+        if (r.story_id === storyIds[0]) days.push(r.day)
+      }
+      for (const r of imageRows.rows as any[]) {
+        images.set(r.story_id, { imageUrl: r.image_url, imageLocalPath: r.image_local_path })
+      }
+      for (const r of entityRows) {
+        const list = fallbackEntities.get(r.storyId) || []
+        if (list.length < 3) list.push({ id: r.id, name: r.name, type: r.type })
+        fallbackEntities.set(r.storyId, list)
       }
     }
 
-    // Fetch entities and representative image for each story
-    const storiesWithEntities = await Promise.all(
-      results.map(async (story) => {
-        // Use cached primaryEntities for v2 stories, fall back to DB query for v1
-        let storyEntityList: Array<{ id: number; name: string; type: string }>
-        if (story.primaryEntities && Array.isArray(story.primaryEntities) && (story.primaryEntities as any[]).length > 0) {
-          storyEntityList = (story.primaryEntities as Array<{ id: number; name: string; type: string }>).slice(0, 3)
-        } else {
-          storyEntityList = await db
-            .select({
-              id: entities.id,
-              name: entities.name,
-              type: entities.type,
-            })
-            .from(storyEntities)
-            .innerJoin(entities, eq(storyEntities.entityId, entities.id))
-            .where(eq(storyEntities.storyId, story.id))
-            .orderBy(desc(storyEntities.relevance))
-            .limit(3)
-        }
+    const outletIds = new Set(outlets.map(o => o.id))
 
-        // Fetch representative article with image
-        const representativeArticle = await db
-          .select({
-            imageUrl: articles.imageUrl,
-            imageLocalPath: articles.imageLocalPath,
-          })
-          .from(storyMembers)
-          .innerJoin(articles, eq(storyMembers.articleId, articles.id))
-          .where(
-            and(
-              eq(storyMembers.storyId, story.id),
-              eq(storyMembers.isRepresentative, true)
-            )
-          )
-          .limit(1)
-
+    return {
+      total,
+      outlets,
+      days,
+      stories: results.map((story) => {
+        const c = counts.get(story.id) || {}
+        const primary = Array.isArray(story.primaryEntities) ? (story.primaryEntities as any[]) : []
         return {
-          ...story,
-          entities: storyEntityList,
-          imageUrl: representativeArticle[0]?.imageUrl || null,
-          imageLocalPath: representativeArticle[0]?.imageLocalPath || null,
-          claims: claimsByStory.get(story.id) || [],
+          id: story.id,
+          title: story.title,
+          summary: story.summary,
+          status: story.status,
+          articleCount: story.articleCount,
+          sourceCount: story.sourceCount,
+          firstSeen: story.firstSeen,
+          lastUpdated: story.lastUpdated,
+          primaryRegion: story.primaryRegion,
+          entities: (primary.length ? primary : fallbackEntities.get(story.id) || [])
+            .slice(0, 3)
+            .map((e: any) => ({ id: e.id, name: e.name, type: e.type })),
+          counts: c,
+          // Articles from outlets that aren't columns (inactive feeds)
+          otherCount: Object.entries(c).reduce((sum, [feedId, n]) => sum + (outletIds.has(Number(feedId)) ? 0 : n), 0),
+          fresh: fresh.get(story.id) || [],
+          daily: daily.get(story.id) || [],
+          imageUrl: images.get(story.id)?.imageUrl || null,
+          imageLocalPath: images.get(story.id)?.imageLocalPath || null,
         }
-      })
-    )
-
-    return storiesWithEntities
+      }),
+    }
   } catch (error) {
     console.error('Error fetching stories:', error)
     throw createError({

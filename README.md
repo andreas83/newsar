@@ -61,6 +61,8 @@ The result: readers can see what's being reported, what's being omitted, and how
 ### Visualization & Exploration
 - **Interactive world map** — Leaflet-based geospatial view of news hotspots
 - **OSINT network graph** — D3.js force-directed graph showing entity relationships
+- **Coverage matrix** — stories × outlets grid showing who covered what, and who didn't
+- **Story narratives** — AI-written overview per story with per-outlet framing and points of disagreement
 - **Story coverage analysis** — Left/Center/Right perspective breakdown per story
 - **Trending bubbles** — Visual representation of trending topics
 
@@ -74,13 +76,17 @@ The result: readers can see what's being reported, what's being omitted, and how
 
 ## Screenshots
 
-### Homepage — Categorized Story Feed
+### Homepage — Lead Story and How Each Outlet Tells It
 ![Homepage](docs/screenshots/screenshot-hero.png)
-*Lead story with hero image, categorized sections (Politics, Conflict, Economy, Diplomacy, Society, Health), trending wire, and latest intel feed with bias indicators.*
+*The lead story with its AI-written lede, one line per outlet on how it frames the story, and where the outlets disagree. On the right: articles per outlet (amber = published in the last 24 hours, with outlets that haven't covered it named) and articles per day.*
 
-### Story Coverage — Multi-Perspective View
+### Who Covers What — Coverage Matrix
+![Coverage matrix](docs/screenshots/screenshot-coverage.png)
+*The next ten stories against every active outlet, grouped by lean. Dot size is the number of articles, amber means the outlet published on it in the last 24 hours, and a dash means no coverage, so gaps in an outlet's coverage stand out at a glance. Each row has a 7-day volume strip.*
+
+### Stories — Every Story with Its Coverage
 ![Stories](docs/screenshots/screenshot-stories.png)
-*Browse 50+ clustered stories. Filter by region, entity, keyword, or time range. View trending stories and switch between list, region, person, org, and keyword views.*
+*All clustered stories as compact rows: headline, AI summary, date span, coverage dots per outlet and a 14-day volume strip. Sort by trending, newest or size; filter by time, region, or the people and organisations that appear most. Filters live in the URL, so a filtered list can be shared.*
 
 ### Entity Browser — People, Orgs, Locations, Events
 ![Entities](docs/screenshots/screenshot-entities.png)
